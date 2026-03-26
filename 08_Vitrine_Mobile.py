@@ -2,66 +2,28 @@ import streamlit as st
 import pandas as pd
 import os
 import re
-import io
-from PIL import Image
+from datetime import datetime
+import pytz
 
 from core_sync import carregar_banco_local, sincronizar_nuvem_para_local
-from core_imagens import THUMBS_DIR
 
 st.set_page_config(page_title="J&F Co. Mobile", layout="centered", page_icon="📱")
 
 # ==========================================
-# 🔒 CONFIGURAÇÕES
+# 🔒 CONFIGURAÇÕES E FORÇA BRUTA
 # ==========================================
 SENHA_MESTRA = "JF2026"
 LINK_FORMULARIO = "https://docs.google.com/forms/d/e/1FAIpQLSf3B1Kh9B-MPhT4nyCaaL64iSV2mk66I2Trdbc1v21aVCoc0A/viewform?usp=header"
+PASTA_THUMBS_NUVEM = "thumbs" # A pasta que você vai criar no GitHub
 
 def limpar_codigo(texto):
     if not texto: return ""
     return re.sub(r'[^A-Z0-9]', '', str(texto).upper())
 
-# ============================================================================
-# 🌐 MOTOR DE IMAGEM HÍBRIDO + RESOLVEDOR DE ATALHOS + COMPRESSOR MOBILE
-# ============================================================================
-@st.cache_data(show_spinner=False, ttl=3600) 
-def obter_imagem_hibrida(ref_limpa, id_drive):
-    caminho_local = os.path.join(THUMBS_DIR, f"{ref_limpa}_thumb.jpg")
-    if os.path.exists(caminho_local): return caminho_local 
-    
-    if pd.notna(id_drive) and str(id_drive).strip() != "" and str(id_drive).strip() != "nan":
-        try:
-            from core_conexoes import conectar_google
-            from googleapiclient.http import MediaIoBaseDownload
-            _, drive = conectar_google()
-            
-            # --- 🚀 O RESOLVEDOR DE ATALHOS ---
-            arquivo_info = drive.files().get(fileId=str(id_drive), fields="mimeType, shortcutDetails").execute()
-            
-            if arquivo_info.get('mimeType') == 'application/vnd.google-apps.shortcut':
-                id_real = arquivo_info['shortcutDetails']['targetId']
-            else:
-                id_real = str(id_drive)
-            # ----------------------------------
-            
-            request = drive.files().get_media(fileId=id_real)
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while done is False:
-                _, done = downloader.next_chunk()
-            fh.seek(0)
-            
-            # COMPRESSOR DE IMAGEM PARA NÃO GASTAR O 4G
-            img = Image.open(fh)
-            if img.mode in ("RGBA", "P"): img = img.convert("RGB")
-            img.thumbnail((400, 400), Image.Resampling.LANCZOS)
-            
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=70, optimize=True)
-            return buf.getvalue() 
-        except Exception as e:
-            return None
-    return None
+def pegar_data_hora():
+    fuso = pytz.timezone('America/Sao_Paulo')
+    agora = datetime.now(fuso)
+    return agora.strftime("%d/%m/%Y às %H:%M")
 
 def tela_login():
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -92,11 +54,17 @@ def main():
         st.link_button("➕ Cadastrar Novo Item", LINK_FORMULARIO, use_container_width=True)
         st.markdown("---")
         
-        if st.button("🔄 Atualizar Estoque", use_container_width=True, type="primary"):
-            with st.spinner("Sincronizando com a Nuvem..."):
+        # O botão agora atualiza os textos/estoque e crava a hora
+        if st.button("🔄 Sincronizar Estoque/Textos", use_container_width=True, type="primary"):
+            with st.spinner("Atualizando dados da planilha..."):
                 sincronizar_nuvem_para_local()
-                st.cache_data.clear() # Força baixar fotos novas e ler os atalhos
+                st.session_state['ultima_atualizacao'] = pegar_data_hora()
             st.rerun()
+            
+        if 'ultima_atualizacao' in st.session_state:
+            st.caption(f"⏱️ **Última Att:** {st.session_state['ultima_atualizacao']}")
+        else:
+            st.caption("⏱️ **Última Att:** Pendente (Clique Atualizar)")
             
         st.markdown("---")
         if st.button("Sair (Logout)", use_container_width=True):
@@ -105,38 +73,29 @@ def main():
 
     df_pai, df_sku, _, df_form = carregar_banco_local()
     if df_pai.empty:
-        st.warning("Banco vazio. Atualize os dados no menu lateral.")
+        st.warning("Banco vazio. Sincronize os dados no menu lateral.")
         return
 
     # ============================================================================
-    # TELA 1: VITRINE (COM FOTO E BARRA DE PROGRESSO)
+    # TELA 1: VITRINE (LEITURA DIRETA DO GITHUB - ZERO TRAVAMENTOS)
     # ============================================================================
     if st.session_state['tela_atual'] == 'vitrine':
         st.title("📱 Catálogo J&F")
         busca = st.text_input("🔍 Buscar Referência:", placeholder="Ex: 1112")
         
         df_f = df_pai[df_pai.astype(str).apply(lambda x: x.str.contains(busca, case=False, na=False)).any(axis=1)] if busca else df_pai.copy()
-        total_itens = len(df_f)
         
-        # BARRA DE PROGRESSO REAL
-        if total_itens > 0:
-            barra_progresso = st.progress(0, text="Preparando vitrine...")
-            
         cols = st.columns(2)
         for i, row in df_f.iterrows():
-            if total_itens > 0:
-                progresso_atual = (i + 1) / total_itens
-                barra_progresso.progress(progresso_atual, text=f"Carregando imagem {i+1} de {total_itens}...")
-
             with cols[i % 2]:
                 with st.container(border=True):
                     ref_limpa = str(row.get('REF')).upper().strip()
-                    id_drive_capa = str(row.get('FOTO_CAPA_ID')).strip()
                     
-                    img_data = obter_imagem_hibrida(ref_limpa, id_drive_capa)
+                    # Procura a foto na pasta 'thumbs' dentro do próprio GitHub
+                    caminho_foto = f"{PASTA_THUMBS_NUVEM}/{ref_limpa}_thumb.jpg"
                     
-                    if img_data: 
-                        st.image(img_data, use_container_width=True)
+                    if os.path.exists(caminho_foto): 
+                        st.image(caminho_foto, use_container_width=True)
                     else: 
                         st.info("📷 S/ Foto")
                     
@@ -145,12 +104,9 @@ def main():
                         st.session_state['produto_id'] = row.get('ID_PAI')
                         st.session_state['tela_atual'] = 'detalhes'
                         st.rerun()
-                        
-        if total_itens > 0:
-            barra_progresso.empty() # Remove a barra ao terminar
 
     # ============================================================================
-    # TELA 2: FICHA TÉCNICA (GRADE, CARACTERÍSTICAS E LINK EXTERNO)
+    # TELA 2: FICHA TÉCNICA E DADOS DA SHOPEE
     # ============================================================================
     elif st.session_state['tela_atual'] == 'detalhes':
         id_sel = st.session_state['produto_id']
@@ -166,31 +122,39 @@ def main():
             
         st.subheader(f"📦 REF: {produto.get('REF')}")
         
-        # FOTO DE CAPA NA FICHA
-        id_drive_capa_ficha = str(produto.get('FOTO_CAPA_ID')).strip()
-        img_data_ficha = obter_imagem_hibrida(limpar_codigo(produto.get('REF')), id_drive_capa_ficha)
-        if img_data_ficha: 
-            st.image(img_data_ficha, use_container_width=True)
+        # FOTO ESTÁTICA
+        ref_limpa = str(produto.get('REF')).upper().strip()
+        caminho_foto_ficha = f"{PASTA_THUMBS_NUVEM}/{ref_limpa}_thumb.jpg"
+        if os.path.exists(caminho_foto_ficha): 
+            st.image(caminho_foto_ficha, use_container_width=True)
         
-        # BOTÃO PARA FOTOS PESADAS NO DRIVE
+        # BOTÃO PARA O DRIVE (ABRIR NATIVO)
+        id_drive_capa_ficha = str(produto.get('FOTO_CAPA_ID')).strip()
         if id_drive_capa_ficha and id_drive_capa_ficha != "nan":
-            # Aqui no botão da ficha técnica a gente aponta para a imagem, mesmo se for atalho, o Drive sabe abrir!
             link_drive_ficha = f"https://drive.google.com/file/d/{id_drive_capa_ficha}/view"
-            st.link_button("🖼️ Ver Fotos em Alta Resolução (Drive)", link_drive_ficha, use_container_width=True)
+            st.link_button("🖼️ Abrir Foto/Pasta Original no Drive", link_drive_ficha, use_container_width=True)
             
         st.markdown("---")
-        st.markdown("#### 📊 Estoque e Grade")
+        st.markdown("#### 📊 Grade de Estoque")
         st.dataframe(skus[['TAMANHO', 'COR', 'ESTOQUE']], hide_index=True, use_container_width=True)
         
         st.markdown("---")
-        st.markdown("#### 📋 Características do Item")
+        st.markdown("#### 📝 Resumo Técnico (Padrão Anúncio)")
+        
+        # GERA O BLOCO TÉCNICO ORGANIZADO
+        resumo_texto = ""
         if not linha_form.empty:
             palavras_ig = ['email', 'e-mail', 'foto', 'imagem', 'link', 'carimbo']
             for col, val in linha_form.items():
                 if any(ig in col.lower() for ig in palavras_ig): continue
                 val_str = str(val).strip()
                 if pd.notna(val) and val_str != "" and not val_str.startswith("http"):
-                    st.markdown(f"**{col}:** {val_str}")
+                    resumo_texto += f"**{col}:** {val_str}\n\n"
+            
+            if resumo_texto:
+                st.info(resumo_texto)
+            else:
+                st.write("Sem dados técnicos cadastrados.")
 
 if __name__ == "__main__":
     main()
