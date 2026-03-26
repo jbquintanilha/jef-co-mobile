@@ -16,10 +16,12 @@ def limpar_codigo(texto):
     if not texto: return ""
     return re.sub(r'[^A-Z0-9]', '', str(texto).upper())
 
-# 💰 FORMATADOR DE MOEDA (CORRIGINDO O ERRO DA VÍRGULA)
+# 💰 FORMATADOR DE MOEDA
 def formatar_moeda(valor):
     try:
-        v = float(str(valor).replace(',', '.'))
+        v_str = str(valor).replace(',', '.').strip()
+        v_str = re.sub(r'[^\d.]', '', v_str)
+        v = float(v_str)
         return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except:
         return str(valor)
@@ -38,7 +40,7 @@ def carregar_banco_estatico():
             
         return df_pai, df_sku, df_form, ultima_att
     except Exception as e:
-        st.error(f"🚨 ERRO DE LEITURA (Me mande este erro): {e}")
+        st.error(f"🚨 ERRO DE LEITURA (Verifique se a pasta {PASTA_PACOTE} está no GitHub): {e}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "Erro"
 
 def tela_login():
@@ -80,27 +82,37 @@ def main():
             st.rerun()
 
     if df_pai.empty:
-        st.warning("⚠️ O pacote de dados 'BANCO_MOBILE' está incompleto ou não foi encontrado.")
+        st.warning(f"⚠️ O pacote de dados '{PASTA_PACOTE}' está incompleto ou não foi encontrado.")
         return
 
     # --- TELA 1: VITRINE ---
     if st.session_state['tela_atual'] == 'vitrine':
         st.title("📱 Catálogo J&F")
         
-        # 🔎 O NOVO SUPER FILTRO
+        # 🔎 O SUPER FILTRO
         busca = st.text_input("🔍 Buscar (Ref, Categoria, Fornecedor...):", placeholder="Ex: Leluc, Calcinha, 350832...")
         
         if busca:
-            termo = busca.lower()
-            # Procura a Referência Direta
+            termo = busca.lower().strip()
+            # Procura a Referência Direta no DF PAI
             mask_pai = df_pai['REF'].astype(str).str.lower().str.contains(termo, na=False)
             
             # Procura Palavras-Chave no Formulário
-            mask_form = df_form.astype(str).apply(lambda x: x.str.lower().str.contains(termo)).any(axis=1)
-            refs_encontradas = df_form[mask_form]['Código / Referência na Etiqueta'].astype(str).unique()
-            
-            # Junta os resultados
-            df_f = df_pai[mask_pai | df_pai['REF'].astype(str).isin(refs_encontradas)]
+            if not df_form.empty:
+                df_form_copy = df_form.copy()
+                if ',' in termo and re.match(r'^\d+,\d{2}$', termo):
+                    termo_preço = termo.replace(',', '.')
+                    for col in df_form_copy.columns:
+                        if 'preço' in col.lower() or 'custo' in col.lower() or 'valor' in col.lower():
+                            df_form_copy[f"{col}_BUSCA_PREÇO"] = df_form_copy[col].apply(lambda x: str(x).replace(',', '.'))
+                
+                mask_form = df_form_copy.astype(str).apply(lambda x: x.str.lower().str.contains(termo if not ',' in termo else termo_preço)).any(axis=1)
+                refs_encontradas = df_form[mask_form]['Código / Referência na Etiqueta'].astype(str).unique()
+                
+                # Junta os resultados
+                df_f = df_pai[mask_pai | df_pai['REF'].astype(str).isin(refs_encontradas)]
+            else:
+                df_f = df_pai[mask_pai]
         else:
             df_f = df_pai.copy()
         
@@ -137,19 +149,29 @@ def main():
             
         st.subheader(f"📦 REF: {produto.get('REF')}")
         
+        # FOTO ESTÁTICA
         ref_limpa = str(produto.get('REF')).upper().strip()
         caminho_foto = f"{PASTA_PACOTE}/thumbs/{ref_limpa}_thumb.jpg"
         if os.path.exists(caminho_foto): 
             st.image(caminho_foto, use_container_width=True)
         
-        id_drive_capa = str(produto.get('FOTO_CAPA_ID')).strip()
-        if id_drive_capa and id_drive_capa != "nan":
-            link_drive = f"https://drive.google.com/file/d/{id_drive_capa}/view"
-            st.link_button("🖼️ Ver Fotos Originais no Drive", link_drive, use_container_width=True)
+        # 🚀 O NOVO LINK INTELIGENTE (PASTA PRIMEIRO, FOTO DEPOIS)
+        id_pasta_drive = str(produto.get('PASTA_DRIVE_ID')).strip()
+        id_foto_capa = str(produto.get('FOTO_CAPA_ID')).strip()
+        
+        if id_pasta_drive and id_pasta_drive != "nan" and id_pasta_drive != "None":
+            link_drive = f"https://drive.google.com/drive/folders/{id_pasta_drive}"
+            st.link_button("📂 Abrir Pasta Completa no Drive", link_drive, use_container_width=True)
+        elif id_foto_capa and id_foto_capa != "nan" and id_foto_capa != "None":
+            link_drive = f"https://drive.google.com/file/d/{id_foto_capa}/view"
+            st.link_button("🖼️ Ver Foto de Capa no Drive", link_drive, use_container_width=True)
             
         st.markdown("---")
         st.markdown("#### 📊 Grade de Estoque")
-        st.dataframe(skus[['TAMANHO', 'COR', 'ESTOQUE']], hide_index=True, use_container_width=True)
+        if not skus.empty:
+            st.dataframe(skus[['TAMANHO', 'COR', 'ESTOQUE']], hide_index=True, use_container_width=True)
+        else:
+            st.write("Sem estoque cadastrado para este item.")
         
         st.markdown("---")
         st.markdown("#### 📝 Resumo Técnico (Padrão Anúncio)")
@@ -162,7 +184,6 @@ def main():
                 if pd.notna(val) and str(val).strip() != "":
                     val_str = str(val).strip()
                     
-                    # 🚀 INTERCEPTADOR DE PREÇO APLICADO AQUI
                     if 'preço' in col.lower() or 'custo' in col.lower() or 'valor' in col.lower():
                         val_str = formatar_moeda(val_str)
                         
