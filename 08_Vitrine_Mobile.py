@@ -16,17 +16,28 @@ def limpar_codigo(texto):
     if not texto: return ""
     return re.sub(r'[^A-Z0-9]', '', str(texto).upper())
 
+# 💰 FORMATADOR DE MOEDA (CORRIGINDO O ERRO DA VÍRGULA)
+def formatar_moeda(valor):
+    try:
+        v = float(str(valor).replace(',', '.'))
+        return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return str(valor)
+
 def carregar_banco_estatico():
     try:
-        # Tenta carregar tudo
         df_pai = pd.read_csv(f"{PASTA_PACOTE}/dados/df_pai.csv")
         df_sku = pd.read_csv(f"{PASTA_PACOTE}/dados/df_sku.csv")
         df_form = pd.read_csv(f"{PASTA_PACOTE}/dados/df_form.csv")
         with open(f"{PASTA_PACOTE}/dados/timestamp.txt", "r", encoding="utf-8") as f:
             ultima_att = f.read()
+            
+        # 🧹 LIMPANDO DUPLICATAS DA VITRINE
+        if not df_pai.empty:
+            df_pai = df_pai.drop_duplicates(subset=['REF'])
+            
         return df_pai, df_sku, df_form, ultima_att
     except Exception as e:
-        # AGORA ELE VAI DEDURAR O ERRO NA TELA
         st.error(f"🚨 ERRO DE LEITURA (Me mande este erro): {e}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "Erro"
 
@@ -75,9 +86,23 @@ def main():
     # --- TELA 1: VITRINE ---
     if st.session_state['tela_atual'] == 'vitrine':
         st.title("📱 Catálogo J&F")
-        busca = st.text_input("🔍 Buscar Referência:", placeholder="Ex: 1112")
         
-        df_f = df_pai[df_pai.astype(str).apply(lambda x: x.str.contains(busca, case=False, na=False)).any(axis=1)] if busca else df_pai.copy()
+        # 🔎 O NOVO SUPER FILTRO
+        busca = st.text_input("🔍 Buscar (Ref, Categoria, Fornecedor...):", placeholder="Ex: Leluc, Calcinha, 350832...")
+        
+        if busca:
+            termo = busca.lower()
+            # Procura a Referência Direta
+            mask_pai = df_pai['REF'].astype(str).str.lower().str.contains(termo, na=False)
+            
+            # Procura Palavras-Chave no Formulário
+            mask_form = df_form.astype(str).apply(lambda x: x.str.lower().str.contains(termo)).any(axis=1)
+            refs_encontradas = df_form[mask_form]['Código / Referência na Etiqueta'].astype(str).unique()
+            
+            # Junta os resultados
+            df_f = df_pai[mask_pai | df_pai['REF'].astype(str).isin(refs_encontradas)]
+        else:
+            df_f = df_pai.copy()
         
         cols = st.columns(2)
         for i, row in df_f.iterrows():
@@ -133,9 +158,16 @@ def main():
             palavras_ig = ['email', 'e-mail', 'foto', 'imagem', 'link', 'carimbo']
             for col, val in linha_form.items():
                 if any(ig in col.lower() for ig in palavras_ig): continue
-                val_str = str(val).strip()
-                if pd.notna(val) and val_str != "" and not val_str.startswith("http"):
-                    resumo_texto += f"**{col}:** {val_str}\n\n"
+                
+                if pd.notna(val) and str(val).strip() != "":
+                    val_str = str(val).strip()
+                    
+                    # 🚀 INTERCEPTADOR DE PREÇO APLICADO AQUI
+                    if 'preço' in col.lower() or 'custo' in col.lower() or 'valor' in col.lower():
+                        val_str = formatar_moeda(val_str)
+                        
+                    if not val_str.startswith("http"):
+                        resumo_texto += f"**{col}:** {val_str}\n\n"
             
             if resumo_texto: st.info(resumo_texto)
             else: st.write("Sem dados técnicos cadastrados.")
