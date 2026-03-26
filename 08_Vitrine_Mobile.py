@@ -34,7 +34,6 @@ def carregar_banco_estatico():
         with open(f"{PASTA_PACOTE}/dados/timestamp.txt", "r", encoding="utf-8") as f:
             ultima_att = f.read()
             
-        # 🧹 LIMPANDO DUPLICATAS DA VITRINE
         if not df_pai.empty:
             df_pai = df_pai.drop_duplicates(subset=['REF'])
             
@@ -89,15 +88,12 @@ def main():
     if st.session_state['tela_atual'] == 'vitrine':
         st.title("📱 Catálogo J&F")
         
-        # 🔎 O SUPER FILTRO
         busca = st.text_input("🔍 Buscar (Ref, Categoria, Fornecedor...):", placeholder="Ex: Leluc, Calcinha, 350832...")
         
         if busca:
             termo = busca.lower().strip()
-            # Procura a Referência Direta no DF PAI
             mask_pai = df_pai['REF'].astype(str).str.lower().str.contains(termo, na=False)
             
-            # Procura Palavras-Chave no Formulário
             if not df_form.empty:
                 df_form_copy = df_form.copy()
                 if ',' in termo and re.match(r'^\d+,\d{2}$', termo):
@@ -109,7 +105,6 @@ def main():
                 mask_form = df_form_copy.astype(str).apply(lambda x: x.str.lower().str.contains(termo if not ',' in termo else termo_preço)).any(axis=1)
                 refs_encontradas = df_form[mask_form]['Código / Referência na Etiqueta'].astype(str).unique()
                 
-                # Junta os resultados
                 df_f = df_pai[mask_pai | df_pai['REF'].astype(str).isin(refs_encontradas)]
             else:
                 df_f = df_pai[mask_pai]
@@ -143,24 +138,20 @@ def main():
         linha_form = df_form[df_form['Código / Referência na Etiqueta'].astype(str) == str(produto.get('REF'))]
         linha_form = linha_form.iloc[0] if not linha_form.empty else pd.Series()
 
-        if st.button("⬅️ VOLTAR"):
+        # BOTÃO VOLTAR NO TOPO
+        if st.button("⬅️ VOLTAR PARA A VITRINE", key="btn_voltar_topo", type="primary"):
             st.session_state['tela_atual'] = 'vitrine'
             st.rerun()
             
         st.subheader(f"📦 REF: {produto.get('REF')}")
         
-        # FOTO ESTÁTICA
         ref_limpa = str(produto.get('REF')).upper().strip()
         caminho_foto = f"{PASTA_PACOTE}/thumbs/{ref_limpa}_thumb.jpg"
         if os.path.exists(caminho_foto): 
             st.image(caminho_foto, use_container_width=True)
         
-        # ==========================================================
-        # 🚀 O CAÇADOR DE PASTAS (LINK INTELIGENTE DO DRIVE)
-        # ==========================================================
         link_pasta_drive = None
         
-        # 1. Tenta achar na coluna injetada pelo novo Empacotador
         if 'PASTA_DRIVE_ID' in produto.index and pd.notna(produto['PASTA_DRIVE_ID']):
             val_str = str(produto['PASTA_DRIVE_ID']).strip()
             if val_str and val_str != "nan":
@@ -169,7 +160,6 @@ def main():
                 else:
                     link_pasta_drive = f"https://drive.google.com/drive/folders/{val_str}"
         
-        # 2. Se não achar, procura nas respostas originais do Google Forms
         if not link_pasta_drive and not linha_form.empty:
             for val in linha_form.values:
                 if pd.notna(val):
@@ -178,10 +168,8 @@ def main():
                         link_pasta_drive = val_str
                         break
 
-        # ID de fallback (se não achar a pasta de jeito nenhum, tenta a foto)
         id_foto_capa = str(produto.get('FOTO_CAPA_ID')).strip()
         
-        # GERA O BOTÃO CERTO
         if link_pasta_drive:
             st.link_button("📂 Abrir Pasta Completa no Drive", link_pasta_drive, use_container_width=True)
         elif id_foto_capa and id_foto_capa != "nan" and id_foto_capa != "None":
@@ -190,8 +178,13 @@ def main():
             
         st.markdown("---")
         st.markdown("#### 📊 Grade de Estoque")
+        
+        # 🧹 TRATAMENTO DE CORES PARA EXIBIÇÃO
         if not skus.empty:
-            st.dataframe(skus[['TAMANHO', 'COR', 'ESTOQUE']], hide_index=True, use_container_width=True)
+            df_skus_exibicao = skus[['TAMANHO', 'COR', 'ESTOQUE']].copy()
+            # Substitui "None", "nan", vazios por um traço
+            df_skus_exibicao['COR'] = df_skus_exibicao['COR'].astype(str).replace(['None', 'nan', '', 'NaN'], '-')
+            st.dataframe(df_skus_exibicao, hide_index=True, use_container_width=True)
         else:
             st.write("Sem estoque cadastrado para este item.")
         
@@ -214,6 +207,12 @@ def main():
             
             if resumo_texto: st.info(resumo_texto)
             else: st.write("Sem dados técnicos cadastrados.")
+
+        # BOTÃO VOLTAR NO RODAPÉ (A SOLUÇÃO DE NAVEGAÇÃO!)
+        st.markdown("---")
+        if st.button("⬅️ VOLTAR PARA A VITRINE", key="btn_voltar_rodape", use_container_width=True, type="primary"):
+            st.session_state['tela_atual'] = 'vitrine'
+            st.rerun()
 
 if __name__ == "__main__":
     main()
