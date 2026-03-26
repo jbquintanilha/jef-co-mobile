@@ -155,16 +155,38 @@ def main():
         if os.path.exists(caminho_foto): 
             st.image(caminho_foto, use_container_width=True)
         
-        # 🚀 O NOVO LINK INTELIGENTE (PASTA PRIMEIRO, FOTO DEPOIS)
-        id_pasta_drive = str(produto.get('PASTA_DRIVE_ID')).strip()
+        # ==========================================================
+        # 🚀 O CAÇADOR DE PASTAS (LINK INTELIGENTE DO DRIVE)
+        # ==========================================================
+        link_pasta_drive = None
+        
+        # 1. Tenta achar na coluna injetada pelo novo Empacotador
+        if 'PASTA_DRIVE_ID' in produto.index and pd.notna(produto['PASTA_DRIVE_ID']):
+            val_str = str(produto['PASTA_DRIVE_ID']).strip()
+            if val_str and val_str != "nan":
+                if "drive.google.com" in val_str:
+                    link_pasta_drive = val_str
+                else:
+                    link_pasta_drive = f"https://drive.google.com/drive/folders/{val_str}"
+        
+        # 2. Se não achar, procura nas respostas originais do Google Forms
+        if not link_pasta_drive and not linha_form.empty:
+            for val in linha_form.values:
+                if pd.notna(val):
+                    val_str = str(val).strip()
+                    if "drive.google.com/drive/folders/" in val_str:
+                        link_pasta_drive = val_str
+                        break
+
+        # ID de fallback (se não achar a pasta de jeito nenhum, tenta a foto)
         id_foto_capa = str(produto.get('FOTO_CAPA_ID')).strip()
         
-        if id_pasta_drive and id_pasta_drive != "nan" and id_pasta_drive != "None":
-            link_drive = f"https://drive.google.com/drive/folders/{id_pasta_drive}"
-            st.link_button("📂 Abrir Pasta Completa no Drive", link_drive, use_container_width=True)
+        # GERA O BOTÃO CERTO
+        if link_pasta_drive:
+            st.link_button("📂 Abrir Pasta Completa no Drive", link_pasta_drive, use_container_width=True)
         elif id_foto_capa and id_foto_capa != "nan" and id_foto_capa != "None":
-            link_drive = f"https://drive.google.com/file/d/{id_foto_capa}/view"
-            st.link_button("🖼️ Ver Foto de Capa no Drive", link_drive, use_container_width=True)
+            link_drive_foto = f"https://drive.google.com/file/d/{id_foto_capa}/view"
+            st.link_button("🖼️ Ver Foto (⚠️ Pasta não localizada)", link_drive_foto, use_container_width=True)
             
         st.markdown("---")
         st.markdown("#### 📊 Grade de Estoque")
