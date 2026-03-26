@@ -2,39 +2,42 @@ import streamlit as st
 import pandas as pd
 import os
 import re
-from datetime import datetime
-import pytz
-
-from core_sync import carregar_banco_local, sincronizar_nuvem_para_local
 
 st.set_page_config(page_title="J&F Co. Mobile", layout="centered", page_icon="📱")
 
 # ==========================================
-# 🔒 CONFIGURAÇÕES E FORÇA BRUTA
+# 🔒 CONFIGURAÇÕES OFFLINE
 # ==========================================
 SENHA_MESTRA = "JF2026"
 LINK_FORMULARIO = "https://docs.google.com/forms/d/e/1FAIpQLSf3B1Kh9B-MPhT4nyCaaL64iSV2mk66I2Trdbc1v21aVCoc0A/viewform?usp=header"
-PASTA_THUMBS_NUVEM = "thumbs" # A pasta que você vai criar no GitHub
+PASTA_PACOTE = "BANCO_MOBILE"
 
 def limpar_codigo(texto):
     if not texto: return ""
     return re.sub(r'[^A-Z0-9]', '', str(texto).upper())
 
-def pegar_data_hora():
-    fuso = pytz.timezone('America/Sao_Paulo')
-    agora = datetime.now(fuso)
-    return agora.strftime("%d/%m/%Y às %H:%M")
+def carregar_banco_estatico():
+    try:
+        # Tenta carregar tudo
+        df_pai = pd.read_csv(f"{PASTA_PACOTE}/dados/df_pai.csv")
+        df_sku = pd.read_csv(f"{PASTA_PACOTE}/dados/df_sku.csv")
+        df_form = pd.read_csv(f"{PASTA_PACOTE}/dados/df_form.csv")
+        with open(f"{PASTA_PACOTE}/dados/timestamp.txt", "r", encoding="utf-8") as f:
+            ultima_att = f.read()
+        return df_pai, df_sku, df_form, ultima_att
+    except Exception as e:
+        # AGORA ELE VAI DEDURAR O ERRO NA TELA
+        st.error(f"🚨 ERRO DE LEITURA (Me mande este erro): {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "Erro"
 
 def tela_login():
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("<h2 style='text-align: center;'>🔒 Acesso Restrito J&F Co.</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Insira a credencial para acessar a vitrine.</p>", unsafe_allow_html=True)
-    
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        senha_digitada = st.text_input("Senha:", type="password", label_visibility="collapsed", placeholder="Digite a senha...")
+        senha = st.text_input("Senha:", type="password", label_visibility="collapsed")
         if st.button("ENTRAR", use_container_width=True, type="primary"):
-            if senha_digitada == SENHA_MESTRA:
+            if senha == SENHA_MESTRA:
                 st.session_state['autenticado'] = True
                 st.rerun()
             else:
@@ -49,36 +52,27 @@ def main():
     if 'tela_atual' not in st.session_state: st.session_state['tela_atual'] = 'vitrine'
     if 'produto_id' not in st.session_state: st.session_state['produto_id'] = None
 
+    df_pai, df_sku, df_form, ultima_att = carregar_banco_estatico()
+
     with st.sidebar:
         st.markdown("### 📱 J&F Co. Mobile")
         st.link_button("➕ Cadastrar Novo Item", LINK_FORMULARIO, use_container_width=True)
         st.markdown("---")
         
-        # O botão agora atualiza os textos/estoque e crava a hora
-        if st.button("🔄 Sincronizar Estoque/Textos", use_container_width=True, type="primary"):
-            with st.spinner("Atualizando dados da planilha..."):
-                sincronizar_nuvem_para_local()
-                st.session_state['ultima_atualizacao'] = pegar_data_hora()
-            st.rerun()
-            
-        if 'ultima_atualizacao' in st.session_state:
-            st.caption(f"⏱️ **Última Att:** {st.session_state['ultima_atualizacao']}")
-        else:
-            st.caption("⏱️ **Última Att:** Pendente (Clique Atualizar)")
+        if ultima_att != "Erro":
+            st.success(f"⏱️ **Dados de:**\n{ultima_att}")
+            st.caption("A atualização é feita via central no PC do CEO.")
             
         st.markdown("---")
         if st.button("Sair (Logout)", use_container_width=True):
             st.session_state['autenticado'] = False
             st.rerun()
 
-    df_pai, df_sku, _, df_form = carregar_banco_local()
     if df_pai.empty:
-        st.warning("Banco vazio. Sincronize os dados no menu lateral.")
+        st.warning("⚠️ O pacote de dados 'BANCO_MOBILE' está incompleto ou não foi encontrado.")
         return
 
-    # ============================================================================
-    # TELA 1: VITRINE (LEITURA DIRETA DO GITHUB - ZERO TRAVAMENTOS)
-    # ============================================================================
+    # --- TELA 1: VITRINE ---
     if st.session_state['tela_atual'] == 'vitrine':
         st.title("📱 Catálogo J&F")
         busca = st.text_input("🔍 Buscar Referência:", placeholder="Ex: 1112")
@@ -90,9 +84,7 @@ def main():
             with cols[i % 2]:
                 with st.container(border=True):
                     ref_limpa = str(row.get('REF')).upper().strip()
-                    
-                    # Procura a foto na pasta 'thumbs' dentro do próprio GitHub
-                    caminho_foto = f"{PASTA_THUMBS_NUVEM}/{ref_limpa}_thumb.jpg"
+                    caminho_foto = f"{PASTA_PACOTE}/thumbs/{ref_limpa}_thumb.jpg"
                     
                     if os.path.exists(caminho_foto): 
                         st.image(caminho_foto, use_container_width=True)
@@ -105,9 +97,7 @@ def main():
                         st.session_state['tela_atual'] = 'detalhes'
                         st.rerun()
 
-    # ============================================================================
-    # TELA 2: FICHA TÉCNICA E DADOS DA SHOPEE
-    # ============================================================================
+    # --- TELA 2: FICHA TÉCNICA ---
     elif st.session_state['tela_atual'] == 'detalhes':
         id_sel = st.session_state['produto_id']
         produto = df_pai[df_pai['ID_PAI'] == id_sel].iloc[0]
@@ -122,17 +112,15 @@ def main():
             
         st.subheader(f"📦 REF: {produto.get('REF')}")
         
-        # FOTO ESTÁTICA
         ref_limpa = str(produto.get('REF')).upper().strip()
-        caminho_foto_ficha = f"{PASTA_THUMBS_NUVEM}/{ref_limpa}_thumb.jpg"
-        if os.path.exists(caminho_foto_ficha): 
-            st.image(caminho_foto_ficha, use_container_width=True)
+        caminho_foto = f"{PASTA_PACOTE}/thumbs/{ref_limpa}_thumb.jpg"
+        if os.path.exists(caminho_foto): 
+            st.image(caminho_foto, use_container_width=True)
         
-        # BOTÃO PARA O DRIVE (ABRIR NATIVO)
-        id_drive_capa_ficha = str(produto.get('FOTO_CAPA_ID')).strip()
-        if id_drive_capa_ficha and id_drive_capa_ficha != "nan":
-            link_drive_ficha = f"https://drive.google.com/file/d/{id_drive_capa_ficha}/view"
-            st.link_button("🖼️ Abrir Foto/Pasta Original no Drive", link_drive_ficha, use_container_width=True)
+        id_drive_capa = str(produto.get('FOTO_CAPA_ID')).strip()
+        if id_drive_capa and id_drive_capa != "nan":
+            link_drive = f"https://drive.google.com/file/d/{id_drive_capa}/view"
+            st.link_button("🖼️ Ver Fotos Originais no Drive", link_drive, use_container_width=True)
             
         st.markdown("---")
         st.markdown("#### 📊 Grade de Estoque")
@@ -140,8 +128,6 @@ def main():
         
         st.markdown("---")
         st.markdown("#### 📝 Resumo Técnico (Padrão Anúncio)")
-        
-        # GERA O BLOCO TÉCNICO ORGANIZADO
         resumo_texto = ""
         if not linha_form.empty:
             palavras_ig = ['email', 'e-mail', 'foto', 'imagem', 'link', 'carimbo']
@@ -151,10 +137,8 @@ def main():
                 if pd.notna(val) and val_str != "" and not val_str.startswith("http"):
                     resumo_texto += f"**{col}:** {val_str}\n\n"
             
-            if resumo_texto:
-                st.info(resumo_texto)
-            else:
-                st.write("Sem dados técnicos cadastrados.")
+            if resumo_texto: st.info(resumo_texto)
+            else: st.write("Sem dados técnicos cadastrados.")
 
 if __name__ == "__main__":
     main()
