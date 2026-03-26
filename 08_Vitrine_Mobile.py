@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import re
 import io
+from PIL import Image
 
 from core_sync import carregar_banco_local, sincronizar_nuvem_para_local
 from core_imagens import THUMBS_DIR
@@ -11,25 +12,25 @@ from core_imagens import THUMBS_DIR
 st.set_page_config(page_title="J&F Co. Mobile", layout="centered", page_icon="📱")
 
 # ==========================================
-# 🔒 CADEADO DIGITAL (Defina sua senha aqui)
+# 🔒 CONFIGURAÇÕES DA CONTA E LINKS
 # ==========================================
 SENHA_MESTRA = "JF2026"
+LINK_FORMULARIO = "https://docs.google.com/forms/d/e/1FAIpQLSf3B1Kh9B-MPhT4nyCaaL64iSV2mk66I2Trdbc1v21aVCoc0A/viewform?usp=header"
 
 def limpar_codigo(texto):
     if not texto: return ""
     return re.sub(r'[^A-Z0-9]', '', str(texto).upper())
 
 # ============================================================================
-# 🌐 MOTOR DE IMAGEM HÍBRIDO (A GRANDE SACADA DO CEO)
+# 🌐 MOTOR DE IMAGEM HÍBRIDO + COMPRESSOR MOBILE
 # ============================================================================
-@st.cache_data(show_spinner=False, ttl=3600) # Guarda na memória por 1 hora para não gastar dados
+@st.cache_data(show_spinner=False, ttl=3600) 
 def obter_imagem_hibrida(ref_limpa, id_drive):
-    # 1. MODO OFFLINE (Rápido - Computador Local)
+    # 1. MODO OFFLINE (PC Local)
     caminho_local = os.path.join(THUMBS_DIR, f"{ref_limpa}_thumb.jpg")
-    if os.path.exists(caminho_local):
-        return caminho_local 
+    if os.path.exists(caminho_local): return caminho_local 
     
-    # 2. MODO ONLINE (Nuvem/Celular - Busca direto do Google Drive via API)
+    # 2. MODO ONLINE (Nuvem)
     if pd.notna(id_drive) and str(id_drive).strip() != "":
         try:
             from core_conexoes import conectar_google
@@ -42,16 +43,26 @@ def obter_imagem_hibrida(ref_limpa, id_drive):
             while done is False:
                 _, done = downloader.next_chunk()
             fh.seek(0)
-            return fh.read() # Retorna a imagem pura para o celular
+            
+            # --- O COMPRESSOR INTELIGENTE DO CEO ---
+            # Pega a foto gigante do Drive e reduz para 500x500 super leve
+            img = Image.open(fh)
+            if img.mode in ("RGBA", "P"): img = img.convert("RGB")
+            img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+            
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=75, optimize=True)
+            return buf.getvalue() 
+            # ---------------------------------------
+            
         except Exception as e:
             return None
     return None
 
 def tela_login():
-    """Renderiza a barreira de segurança."""
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("<h2 style='text-align: center;'>🔒 Acesso Restrito J&F Co.</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Insira a credencial para acessar a vitrine operacional.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Insira a credencial para acessar a vitrine.</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -64,25 +75,25 @@ def tela_login():
                 st.error("❌ Credencial inválida.")
 
 def main():
-    if 'autenticado' not in st.session_state:
-        st.session_state['autenticado'] = False
-
+    if 'autenticado' not in st.session_state: st.session_state['autenticado'] = False
     if not st.session_state['autenticado']:
         tela_login()
         return
 
-    # ==========================================
-    # 🔓 ÁREA LOGADA
-    # ==========================================
     if 'tela_atual' not in st.session_state: st.session_state['tela_atual'] = 'vitrine'
     if 'produto_id' not in st.session_state: st.session_state['produto_id'] = None
 
     with st.sidebar:
         st.markdown("### 📱 J&F Co. Mobile")
+        
+        # BOTÃO DE CADASTRO COM SEU LINK OFICIAL
+        st.link_button("➕ Cadastrar Novo Item", LINK_FORMULARIO, use_container_width=True)
+        st.markdown("---")
+        
         if st.button("🔄 Atualizar Dados", use_container_width=True, type="primary"):
             with st.spinner("Baixando novidades do Drive..."):
                 sincronizar_nuvem_para_local()
-                st.cache_data.clear() # Limpa o cache para baixar fotos novas se houver
+                st.cache_data.clear() # Limpa as fotos antigas da memória
             st.rerun()
             
         st.markdown("---")
@@ -102,27 +113,37 @@ def main():
         busca = st.text_input("🔍 Buscar Referência:", placeholder="Ex: 1112")
         
         df_f = df_pai[df_pai.astype(str).apply(lambda x: x.str.contains(busca, case=False, na=False)).any(axis=1)] if busca else df_pai.copy()
+        total_itens = len(df_f)
+        
+        # 🟢 A BARRA DE CARREGAMENTO OFICIAL
+        barra_progresso = st.empty()
         
         cols = st.columns(2)
         for i, row in df_f.iterrows():
+            
+            # Atualiza a barra a cada item processado
+            if total_itens > 0:
+                progresso_atual = (i + 1) / total_itens
+                barra_progresso.progress(progresso_atual, text=f"Carregando imagem {i+1} de {total_itens}...")
+
             with cols[i % 2]:
                 with st.container(border=True):
                     ref_limpa = str(row.get('REF')).upper().strip()
                     id_drive_capa = row.get('FOTO_CAPA_ID')
                     
-                    # Chama o motor híbrido para resolver se usa HD local ou Nuvem
                     img_data = obter_imagem_hibrida(ref_limpa, id_drive_capa)
                     
-                    if img_data: 
-                        st.image(img_data, use_container_width=True)
-                    else: 
-                        st.info("📷 S/ Foto")
+                    if img_data: st.image(img_data, use_container_width=True)
+                    else: st.info("📷 S/ Foto")
                     
                     st.markdown(f"**REF: {row.get('REF')}**")
                     if st.button("Ver Ficha", key=f"btn_{i}_{row.get('ID_PAI')}", use_container_width=True):
                         st.session_state['produto_id'] = row.get('ID_PAI')
                         st.session_state['tela_atual'] = 'detalhes'
                         st.rerun()
+        
+        # Remove a barra da tela quando termina
+        barra_progresso.empty()
 
     # --- TELA 2: FICHA TÉCNICA ---
     elif st.session_state['tela_atual'] == 'detalhes':
@@ -139,10 +160,8 @@ def main():
             
         st.subheader(f"📦 REF: {produto.get('REF')}")
         
-        # Mostra a foto grande na ficha técnica também (usando o motor híbrido)
         img_data_ficha = obter_imagem_hibrida(limpar_codigo(produto.get('REF')), produto.get('FOTO_CAPA_ID'))
-        if img_data_ficha:
-            st.image(img_data_ficha, use_container_width=True)
+        if img_data_ficha: st.image(img_data_ficha, use_container_width=True)
             
         st.markdown("---")
         st.markdown("#### 📊 Estoque")
