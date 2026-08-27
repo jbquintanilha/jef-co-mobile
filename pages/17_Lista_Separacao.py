@@ -28,9 +28,14 @@ As 7 fases (ordem definida pelo Jota):
    informacao — core_separacao_atomos.decompor_sku() so' le.
 """
 
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+_RAIZ = Path(__file__).resolve().parent.parent
+if str(_RAIZ) not in sys.path:
+    sys.path.insert(0, str(_RAIZ))
 
 import streamlit as st
 import pandas as pd
@@ -38,9 +43,10 @@ import core_separacao as cs
 
 # separador_etiquetas vive em tools/ — sem isto o botao de imprimir quebra
 # com ModuleNotFoundError silencioso dentro do try/except.
-_TOOLS = Path(__file__).resolve().parent.parent / "tools"
+_TOOLS = _RAIZ / "tools"
 if _TOOLS.is_dir() and str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
+
 
 st.set_page_config(
     page_title="Esteira de Expedição — J&F Co.",
