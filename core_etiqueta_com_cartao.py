@@ -54,20 +54,36 @@ log = logging.getLogger("core_etiqueta_com_cartao")
 # canal (cupom nao muda por pedido), entao regerar e' desperdicio.
 # Se o cartao mudar, basta regerar o PDF uma vez -- este modulo nao muda.
 def _get_cartao(canal: str) -> Path:
-    local = Path(__file__).parent / "cartoes" / f"cartao_agradecimento_{canal}_10x15.pdf"
-    if local.is_file():
-        return local
-    drive = Path(
-        r"I:\Meu Drive\000 - ERP E-commerce Moda Íntima  Gestão de Estoque e Finanças"
-        r" (File responses)\6 - Pós-Venda"
-    ) / f"cartao_agradecimento_{canal}_10x15.pdf"
-    return drive if drive.is_file() else local
+    nome = f"cartao_agradecimento_{canal}_10x15.pdf"
+    candidatos = [
+        Path(__file__).resolve().parent / "cartoes" / nome,
+        Path.cwd() / "cartoes" / nome,
+        Path(r"c:\jef-co-mobile\cartoes") / nome,
+        Path(r"c:\JF_Automacoes\cartoes") / nome,
+        Path(
+            r"I:\Meu Drive\000 - ERP E-commerce Moda Íntima  Gestão de Estoque e Finanças"
+            r" (File responses)\6 - Pós-Venda"
+        ) / nome,
+    ]
+    for c in candidatos:
+        try:
+            if c.is_file():
+                return c
+        except Exception:
+            pass
+    return candidatos[0]
 
-CARTOES = {
-    "shopee": _get_cartao("shopee"),
-    "ml": _get_cartao("ml"),
-    "tiktok": _get_cartao("tiktok"),
-}
+
+class _CartoesProxy(dict):
+    """Permite acesso dinâmico CARTOES['tiktok'] resolvendo o caminho na hora."""
+    def __getitem__(self, key: str) -> Path:
+        return _get_cartao(key)
+
+    def get(self, key: str, default=None) -> Path:
+        return _get_cartao(key)
+
+
+CARTOES = _CartoesProxy()
 
 # Rastreios: Correios (TikTok/ML) e Shopee.
 _RE_RASTREIO_CORREIOS = re.compile(r"\b([A-Z]{2}\d{9}[A-Z]{2})\b")
