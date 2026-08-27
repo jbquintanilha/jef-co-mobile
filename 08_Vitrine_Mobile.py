@@ -3,7 +3,7 @@
 # DESCRICAO: Hub Mobile Oficial da Esteira de Expedição J&F Co. (Nuvem 24/7)
 # FUNCAO: Conexão direta com a Esteira de Separação, Conferência e Etiquetas
 # STATUS: ATIVO
-# VERSAO: 2.0
+# VERSAO: 2.1
 # DATA: 26/08/2026
 # AUTOR: Violino (000)
 # ==============================================================================
@@ -13,8 +13,9 @@ import sys
 from pathlib import Path
 
 _RAIZ = Path(__file__).parent.resolve()
-if str(_RAIZ) not in sys.path:
-    sys.path.insert(0, str(_RAIZ))
+sys.path.insert(0, str(_RAIZ))
+sys.path.insert(0, str(_RAIZ / "pages"))
+os.chdir(str(_RAIZ))
 
 import streamlit as st
 
