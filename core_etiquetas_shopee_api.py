@@ -38,9 +38,17 @@ from typing import Any
 
 from core_shopee import ShopeeClient
 
-log = logging.getLogger(__name__)
+import tempfile
 
-PASTA_SAIDA = Path(os.path.expanduser("~")) / "Downloads"
+def _get_pasta_saida() -> Path:
+    if os.name == "nt":
+        p = Path(os.path.expanduser("~")) / "Downloads"
+    else:
+        p = Path(tempfile.gettempdir()) / "downloads_jef"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+PASTA_SAIDA = _get_pasta_saida()
 
 # Downloads simultaneos. 6 acelera ~5x sem irritar o rate limit da Shopee.
 MAX_PARALELO = 6

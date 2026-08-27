@@ -65,9 +65,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger(__name__)
+import tempfile
 
-PASTA_SAIDA = Path(os.path.expanduser("~")) / "Downloads"
+def _get_pasta_saida() -> Path:
+    if os.name == "nt":
+        p = Path(os.path.expanduser("~")) / "Downloads"
+    else:
+        p = Path(tempfile.gettempdir()) / "downloads_jef"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+PASTA_SAIDA = _get_pasta_saida()
 
 # Quantos shipments por chamada. O endpoint aceita lista, mas URL longa
 # demais falha inteira -- em lote pequeno a falha fica isolada.

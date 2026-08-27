@@ -1136,46 +1136,51 @@ if fase(2):
         if st.button("🔢 Gerar pilha numerada na ordem da esteira",
                      type="primary", use_container_width=True,
                      key="btn_pilha_esteira"):
-            with st.spinner("Baixando, ordenando pela esteira e numerando..."):
-                try:
-                    import core_etiquetas_na_esteira as cne
-                    # Ondas: imprime SO' o que ainda nao foi processado.
-                    # Sem isto a segunda leva do dia repetia a pilha inteira.
-                    _so = None
-                    if _dados_onda and not _imprimir_tudo:
-                        _so = {str(p.get("numero_ecommerce") or "")
-                               for p in _pend}
-                    r_es = cne.gerar(com_cartao=cartao_esteira,
-                                     nome_real=nome_real_esteira,
-                                     somente=_so)
+            prog_bar = st.progress(5, text="⏳ [1/4] Conectando APIs e baixando etiquetas (TikTok, Shopee, ML)... (5%)")
+            try:
+                import core_etiquetas_na_esteira as cne
+                _so = None
+                if _dados_onda and not _imprimir_tudo:
+                    _so = {str(p.get("numero_ecommerce") or "") for p in _pend}
 
-                    if r_es.get("pdf"):
-                        with open(r_es["pdf"], "rb") as fh:
-                            st.session_state["pdf_esteira_bytes"] = fh.read()
-                        st.session_state["pdf_esteira_path"] = r_es["pdf"]
-                        st.success(f"✅ {r_es['resumo']}")
-                        if r_es.get("nomes_corrigidos"):
-                            st.info(
-                                f"🪪 {r_es['nomes_corrigidos']} etiqueta(s) "
-                                "ganharam o nome civil ao lado do apelido.")
-                        if r_es.get("filtrados_por_onda"):
-                            st.caption(
-                                f"🌊 {r_es['filtrados_por_onda']} etiqueta(s) "
-                                "de pedido já processado ficaram de fora."
-                            )
-                        if r_es.get("fora_da_esteira"):
-                            st.warning(
-                                f"⚠️ {r_es['fora_da_esteira']} etiqueta(s) sem "
-                                "posição na sequência — foram para o FIM da "
-                                "pilha, não se perderam.")
-                    else:
-                        st.warning("Nenhuma etiqueta disponível.")
+                prog_bar.progress(35, text="⏳ [2/4] Normalizando formato térmico 10x15 e intercalando cartões... (35%)")
 
-                    for e in r_es.get("erros") or []:
-                        st.warning(f"⚠️ {e}")
-                except Exception as exc:
-                    erro_visivel("3️⃣ Etiq + Cartão",
-                                 "Falha ao gerar a pilha da esteira", exc)
+                r_es = cne.gerar(com_cartao=cartao_esteira,
+                                 nome_real=nome_real_esteira,
+                                 somente=_so)
+
+                prog_bar.progress(80, text="⏳ [3/4] Aplicando sequência da esteira e numeração #1..#N... (80%)")
+
+                if r_es.get("pdf") and Path(r_es["pdf"]).exists():
+                    with open(r_es["pdf"], "rb") as fh:
+                        st.session_state["pdf_esteira_bytes"] = fh.read()
+                    st.session_state["pdf_esteira_path"] = r_es["pdf"]
+                    prog_bar.progress(100, text="✅ [4/4] Pilha numerada pronta para impressão! (100%)")
+                    st.success(f"✅ {r_es['resumo']}")
+                    if r_es.get("nomes_corrigidos"):
+                        st.info(
+                            f"🪪 {r_es['nomes_corrigidos']} etiqueta(s) "
+                            "ganharam o nome civil ao lado do apelido.")
+                    if r_es.get("filtrados_por_onda"):
+                        st.caption(
+                            f"🌊 {r_es['filtrados_por_onda']} etiqueta(s) "
+                            "de pedido já processado ficaram de fora."
+                        )
+                    if r_es.get("fora_da_esteira"):
+                        st.warning(
+                            f"⚠️ {r_es['fora_da_esteira']} etiqueta(s) sem "
+                            "posição na sequência — foram para o FIM da "
+                            "pilha, não se perderam.")
+                else:
+                    prog_bar.empty()
+                    st.warning(f"⚠️ [ERR-001] Nenhuma etiqueta disponível para gerar a pilha. ({r_es.get('resumo', '')})")
+
+                for e in r_es.get("erros") or []:
+                    st.warning(f"⚠️ [ERR-003] {e}")
+            except Exception as exc:
+                prog_bar.empty()
+                erro_visivel("3️⃣ Etiq + Cartão",
+                             "[ERR-002] Falha ao gerar a pilha da esteira", exc)
 
     if st.session_state.get("pdf_esteira_bytes"):
         st.download_button(

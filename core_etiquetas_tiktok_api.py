@@ -57,8 +57,17 @@ ACCESS_TOKEN = get_secret("TIKTOK_ACCESS_TOKEN", "")
 SHOP_CIPHER = get_secret("TIKTOK_SHOP_CIPHER", "")
 
 
-# Pasta de saida: Downloads com timestamp (padrao da casa para export final)
-PASTA_SAIDA = Path(os.path.expanduser("~")) / "Downloads"
+import tempfile
+
+def _get_pasta_saida() -> Path:
+    if os.name == "nt":
+        p = Path(os.path.expanduser("~")) / "Downloads"
+    else:
+        p = Path(tempfile.gettempdir()) / "downloads_jef"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+PASTA_SAIDA = _get_pasta_saida()
 
 # Downloads simultaneos. 6 acelera ~4x sem estourar o rate limit do TikTok.
 MAX_PARALELO = 6
