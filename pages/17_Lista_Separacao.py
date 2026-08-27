@@ -37,9 +37,11 @@ _RAIZ = Path(__file__).resolve().parent.parent
 if str(_RAIZ) not in sys.path:
     sys.path.insert(0, str(_RAIZ))
 
+import core_env_loader
 import streamlit as st
 import pandas as pd
 import core_separacao as cs
+
 
 # separador_etiquetas vive em tools/ — sem isto o botao de imprimir quebra
 # com ModuleNotFoundError silencioso dentro do try/except.

@@ -17,7 +17,9 @@ sys.path.insert(0, str(_RAIZ))
 sys.path.insert(0, str(_RAIZ / "pages"))
 os.chdir(str(_RAIZ))
 
+import core_env_loader
 import streamlit as st
+
 
 st.set_page_config(
     page_title="Esteira Expedição — J&F Co.",
