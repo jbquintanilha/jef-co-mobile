@@ -273,10 +273,43 @@ def upsert_rastreio(registro: dict) -> bool:
                     str(registro.get("numero_nf") or "").strip() or None,
                 ),
             )
+        _espelhar_na_nuvem(registro)
         return True
     except sqlite3.Error as e:
         log.error("Erro ao inserir rastreio %s: %s", registro.get("tracking"), e)
         return False
+
+
+def _espelhar_na_nuvem(registro: dict) -> None:
+    """Replica o vinculo pro Supabase, de onde o celular le.
+
+    O SQLite so' existe na maquina que rodou o populator. O app no Streamlit
+    Cloud nao tem esse arquivo -- antes ele vinha COMMITADO no repo, o que
+    trazia de volta dado velho a cada deploy (foi assim que um vinculo errado
+    sobreviveu a duas correcoes de codigo e o scanner abriu uma calcinha no
+    lugar de uma meia). Com o banco fora do git, a nuvem passa a ser a ponte.
+
+    Best-effort de proposito: a bancada nao pode parar porque a internet caiu.
+    Falha vira aviso no log, o indice local segue valendo, e o proximo
+    populator tenta de novo.
+    """
+    try:
+        import core_scanner_supabase as nuvem
+    except Exception:
+        return
+    if not (getattr(nuvem, "SUPABASE_URL", "") and getattr(nuvem, "SUPABASE_KEY", "")):
+        return
+    try:
+        payload = dict(registro)
+        # A nuvem guarda os itens ja' serializados (o SQLite serializa na hora
+        # do INSERT); sem isso o mobile recebe a lista crua e nao sabe ler.
+        if "itens" in payload and "itens_json" not in payload:
+            payload["itens_json"] = _serializar_itens(payload.get("itens")) or "[]"
+        if not nuvem.salvar_rastreio_nuvem(payload):
+            log.warning("Nao consegui espelhar %s na nuvem (segue so' no indice local).",
+                        registro.get("tracking"))
+    except Exception as e:
+        log.warning("Falha ao espelhar %s na nuvem: %s", registro.get("tracking"), e)
 
 
 def buscar_por_tracking(tracking: str) -> dict | None:

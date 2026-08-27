@@ -757,6 +757,26 @@ def _anexar_status(result: dict | None, *, pedido_olist: dict | None = None) -> 
 # ------------------------------------------------------------------ #
 # Resolver principal
 # ------------------------------------------------------------------ #
+def _buscar_na_nuvem(codigo: str) -> dict | None:
+    """Consulta o indice espelhado no Supabase. None se indisponivel ou ausente.
+
+    Best-effort: sem credencial, sem rede ou com a tabela ainda nao criada,
+    devolve None em silencio e a cascata segue pro Olist. A conferencia nunca
+    pode parar por causa da nuvem.
+    """
+    try:
+        import core_scanner_supabase as nuvem
+    except Exception:
+        return None
+    if not (getattr(nuvem, "SUPABASE_URL", "") and getattr(nuvem, "SUPABASE_KEY", "")):
+        return None
+    try:
+        return nuvem.buscar_rastreio_nuvem(codigo) or None
+    except Exception as e:
+        log.warning("Falha ao consultar a nuvem para %s: %s", codigo, e)
+        return None
+
+
 def resolver_codigo(codigo: str) -> dict | None:
     """Resolve um codigo lido da etiqueta para o pedido de conferencia.
 
@@ -817,6 +837,21 @@ def resolver_codigo(codigo: str) -> dict | None:
     reg = db.buscar_por_codigo_ml(codigo_limpo)
     if reg:
         return _anexar_status(_montar_resultado_do_registro(reg, origem="indice_ml"))
+
+    # 2c. Indice na NUVEM (Supabase).
+    #
+    # O SQLite so' existe na maquina que rodou o populator. No celular ele nao
+    # existe -- antes vinha commitado no repo, o que ressuscitava dado velho a
+    # cada deploy. Com o banco fora do git, esta etapa e' o que mantem a
+    # bancada mobile enxergando os pedidos do dia.
+    #
+    # Vem DEPOIS do indice local (mais rapido, sem rede) e ANTES do Olist, que
+    # so' resolve por numero de pedido -- o rastreio da etiqueta J&T nao casa
+    # la', entao sem esta etapa o mobile diz "nao encontrado" para toda
+    # etiqueta do TikTok.
+    reg_nuvem = _buscar_na_nuvem(codigo_limpo)
+    if reg_nuvem:
+        return _anexar_status(_montar_resultado_do_registro(reg_nuvem, origem="nuvem"))
 
     # 3. Busca ao vivo no Olist por numeroPedidoEcommerce
     alvo_olist = pedido_extraido or codigo_limpo
