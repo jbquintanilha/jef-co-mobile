@@ -43,6 +43,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 PASTA_SAIDA = Path(os.path.expanduser("~")) / "Downloads"
+PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
 
 
 def _pedidos_filtrados_shopee(somente: set[str]) -> list[str]:
