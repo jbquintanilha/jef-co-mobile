@@ -148,12 +148,17 @@ def init_db() -> None:
                          "ON rastreio_pedidos(shipment_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_rastreio_pack "
                          "ON rastreio_pedidos(pack_id)")
-            # v1.7 (25/08): classificacao de risco de volume, calculada pela
-            # MESMA funcao que a Esteira usa (`core_separacao.
-            # processar_batch_picking`) — Jota pediu o Scanner "importar a
-            # mesma lista de separacao" em vez de reimplementar o criterio.
+            # v1.7 (25/08): classificacao de risco de volume
             if "alerta_volume" not in cols_rastreio:
                 conn.execute("ALTER TABLE rastreio_pedidos ADD COLUMN alerta_volume TEXT")
+            # v1.8 (27/08): Identificação fiscal automática — Chave de Acesso da DANFE (44 dígitos)
+            # e Número da Nota Fiscal (ex: 434) para bipagem via código de barras da NF da Receita.
+            if "chave_nfe" not in cols_rastreio:
+                conn.execute("ALTER TABLE rastreio_pedidos ADD COLUMN chave_nfe TEXT")
+            if "numero_nf" not in cols_rastreio:
+                conn.execute("ALTER TABLE rastreio_pedidos ADD COLUMN numero_nf TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_rastreio_chave_nfe ON rastreio_pedidos(chave_nfe)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_rastreio_numero_nf ON rastreio_pedidos(numero_nf)")
         log.info("Banco do scanner pronto: %s", DB_PATH)
     except sqlite3.Error as e:  # pragma: no cover - defensivo
         log.error("Falha ao inicializar banco do scanner: %s", e)
@@ -226,13 +231,16 @@ def upsert_rastreio(registro: dict) -> bool:
                     (tracking, canal, pedido_ecommerce, sku_principal,
                      produto_nome, cor, kit, cliente_nome, cep, peso_kg,
                      imagem_url, itens_json, alerta_volume, shipment_id, pack_id,
+                     chave_nfe, numero_nf,
                      criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         datetime('now','localtime'), datetime('now','localtime'))
                 ON CONFLICT(tracking, canal) DO UPDATE SET
                     pedido_ecommerce = excluded.pedido_ecommerce,
                     shipment_id      = COALESCE(excluded.shipment_id, rastreio_pedidos.shipment_id),
                     pack_id          = COALESCE(excluded.pack_id, rastreio_pedidos.pack_id),
+                    chave_nfe        = COALESCE(excluded.chave_nfe, rastreio_pedidos.chave_nfe),
+                    numero_nf        = COALESCE(excluded.numero_nf, rastreio_pedidos.numero_nf),
                     sku_principal    = COALESCE(excluded.sku_principal, rastreio_pedidos.sku_principal),
                     produto_nome     = COALESCE(excluded.produto_nome, rastreio_pedidos.produto_nome),
                     cor              = COALESCE(excluded.cor, rastreio_pedidos.cor),
@@ -261,6 +269,8 @@ def upsert_rastreio(registro: dict) -> bool:
                     registro.get("alerta_volume") or "",
                     normalizar_codigo(str(registro.get("shipment_id") or "")) or None,
                     normalizar_codigo(str(registro.get("pack_id") or "")) or None,
+                    normalizar_codigo(str(registro.get("chave_nfe") or "")) or None,
+                    str(registro.get("numero_nf") or "").strip() or None,
                 ),
             )
         return True
@@ -336,6 +346,53 @@ def contar_por_pack(pack_id: str) -> int:
     except sqlite3.Error as e:
         log.error("Erro ao contar pack %s: %s", p, e)
         return 0
+
+
+def buscar_por_chave_nfe(chave_nfe: str) -> dict | None:
+    """Retorna o registro do indice correspondente a chave de 44 digitos da DANFE."""
+    c = normalizar_codigo(chave_nfe)
+    if not c or len(c) != 44:
+        return None
+    try:
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM rastreio_pedidos WHERE chave_nfe = ? ORDER BY id LIMIT 1",
+                (c,),
+            ).fetchone()
+            if row:
+                return dict(row)
+            # Fallback: tentar extrair numero da NF dos digitos 25..34
+            try:
+                num_nf = str(int(c[25:34]))
+                row_nf = conn.execute(
+                    "SELECT * FROM rastreio_pedidos WHERE numero_nf = ? ORDER BY id LIMIT 1",
+                    (num_nf,),
+                ).fetchone()
+                if row_nf:
+                    return dict(row_nf)
+            except Exception:
+                pass
+        return None
+    except sqlite3.Error as e:
+        log.error("Erro ao buscar chave NF-e %s: %s", c, e)
+        return None
+
+
+def buscar_por_numero_nf(numero_nf: str) -> dict | None:
+    """Retorna o registro do indice pelo numero sequencial da NF (ex: 434)."""
+    n = str(numero_nf).strip().lstrip("0")
+    if not n:
+        return None
+    try:
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM rastreio_pedidos WHERE numero_nf = ? OR numero_nf = ? ORDER BY id LIMIT 1",
+                (n, str(numero_nf).strip()),
+            ).fetchone()
+        return dict(row) if row else None
+    except sqlite3.Error as e:
+        log.error("Erro ao buscar numero NF %s: %s", n, e)
+        return None
 
 
 def buscar_por_pedido(pedido_ecommerce: str) -> dict | None:

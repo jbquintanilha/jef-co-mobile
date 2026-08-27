@@ -237,6 +237,19 @@ def _registro_do_pedido_olist(client, p: dict, *, canal: str, tracking: str,
             log.warning("Classificacao de risco falhou p/ pedido %s: %s",
                        p.get("id"), e)
 
+    # Extração de dados fiscais (NF-e / DANFE)
+    nf_info = detalhe.get("notaFiscal") or p.get("notaFiscal") or {}
+    chave_nfe = (
+        detalhe.get("chaveAcesso")
+        or p.get("chaveAcesso")
+        or nf_info.get("chaveAcesso")
+        or nf_info.get("chave")
+        or ""
+    )
+    numero_nf = (
+        str(nf_info.get("numero") or detalhe.get("numero") or p.get("numero") or "").strip()
+    )
+
     return {
         "tracking": tracking,
         "canal": canal,
@@ -251,6 +264,8 @@ def _registro_do_pedido_olist(client, p: dict, *, canal: str, tracking: str,
         "imagem_url": imagem_url or None,
         "itens": itens_lista,
         "alerta_volume": alerta_volume,
+        "chave_nfe": chave_nfe or None,
+        "numero_nf": numero_nf or None,
     }
 
 

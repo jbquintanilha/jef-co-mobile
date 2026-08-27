@@ -782,10 +782,23 @@ def resolver_codigo(codigo: str) -> dict | None:
     codigo_limpo = db.normalizar_codigo(codigo)
     pedido_extraido = extrair_numero_pedido(codigo_limpo)
 
-    # 1. Match por tracking no indice
+    # 1. Match por tracking no indice (Shopee, TikTok/J&T, Correios)
     reg = db.buscar_por_tracking(codigo_limpo)
     if reg:
         return _anexar_status(_montar_resultado_do_registro(reg, origem="indice"))
+
+    # 1b. Identificacao Fiscal Automatica: Chave DANFE de 44 digitos ou Numero de NF
+    if len(codigo_limpo) == 44 and codigo_limpo.isdigit():
+        reg_nfe = db.buscar_por_chave_nfe(codigo_limpo)
+        if reg_nfe:
+            return _anexar_status(_montar_resultado_do_registro(reg_nfe, origem="indice_nfe"))
+        try:
+            num_nf = str(int(codigo_limpo[25:34]))
+            reg_nf = db.buscar_por_numero_nf(num_nf)
+            if reg_nf:
+                return _anexar_status(_montar_resultado_do_registro(reg_nf, origem="indice_nfe"))
+        except Exception:
+            pass
 
     # 2. Match por numero de pedido no indice (extraido ou codigo cru)
     for alvo in (pedido_extraido, codigo_limpo):

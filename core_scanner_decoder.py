@@ -85,9 +85,7 @@ def sanitizar_codigo(bruto: str) -> str:
     if not s:
         return ""
 
-    # ---- LISTA NEGRA: o que sabemos que nunca identifica um pedido ----
-    if _RE_CHAVE_NFE.match(s):
-        return ""          # chave de acesso da NF-e (44 digitos)
+    # ---- LISTA NEGRA: descarta apenas o que comprovadamente não identifica pedido ----
     if _RE_CEP.match(s):
         return ""          # CEP do destinatario (8 digitos)
 
