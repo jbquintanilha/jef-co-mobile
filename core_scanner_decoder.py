@@ -38,9 +38,17 @@ log = logging.getLogger("core_scanner_decoder")
 # Rastreio dos Correios: 2 letras + 9 digitos + 2 letras (ex: AP296430628BR).
 _RE_RASTREIO_CORREIOS = re.compile(r"\b([A-Z]{2}\d{9}[A-Z]{2})\b")
 
-# Chave de acesso da NF-e: 44 digitos. Aparece no Code128 do DANFE
-# simplificado da etiqueta -- NAO serve pra identificar o pedido, e' preciso
-# descartar senao o scanner "acha" que leu algo util e nao resolve nada.
+# Chave de acesso da NF-e: 44 digitos. Aparece no Code128 do DANFE simplificado
+# da etiqueta.
+#
+# Desde 27/08 ela NAO e' mais descartada: o indice guarda `chave_nfe` e o
+# resolver casa por ela (identificador unico). O que continua valendo e' que a
+# chave NAO deve ser "quebrada" pra extrair o numero curto da NF e buscar por
+# esse pedaco -- isso ja' abriu o pedido errado uma vez (ver nota em
+# `core_scanner_resolver.resolver_codigo`, etapa 1b).
+#
+# A regex segue em uso no desempate de `_escolher_melhor`: quando a etiqueta
+# traz varios codigos, um rastreio isolado resolve mais rapido que a chave.
 _RE_CHAVE_NFE = re.compile(r"^\d{44}$")
 
 # Rastreio Shopee: BR + 12 alfanumericos (ex: BR264884133776V, BR2636267229403).

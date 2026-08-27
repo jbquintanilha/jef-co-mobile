@@ -348,48 +348,91 @@ def contar_por_pack(pack_id: str) -> int:
         return 0
 
 
+def _colunas_fiscais_ok(conn: sqlite3.Connection) -> bool:
+    """True se as colunas fiscais da v1.8 existem no banco.
+
+    ⚠️ Existe porque a migracao v1.8 (`chave_nfe`/`numero_nf`) so' roda quando
+    `init_db()` e' chamado. Em processo que subiu antes da migracao -- ou em
+    banco de outra maquina -- as colunas faltam e todo SELECT nelas explode com
+    "no such column". Antes, o `except sqlite3.Error` engolia isso e devolvia
+    None: a identificacao fiscal parecia "nao achou" quando na verdade nunca
+    tinha sido possivel consultar. Falha silenciosa em scanner de conferencia
+    e' inaceitavel -- aqui ela vira aviso no log.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(rastreio_pedidos)").fetchall()}
+    faltando = {"chave_nfe", "numero_nf"} - cols
+    if faltando:
+        log.warning(
+            "Colunas fiscais ausentes no banco (%s). Rode db.init_db() para migrar "
+            "-- busca por chave DANFE/numero de NF esta INDISPONIVEL ate' la.",
+            ", ".join(sorted(faltando)),
+        )
+        return False
+    return True
+
+
 def buscar_por_chave_nfe(chave_nfe: str) -> dict | None:
-    """Retorna o registro do indice correspondente a chave de 44 digitos da DANFE."""
+    """Retorna o registro do indice correspondente a chave de 44 digitos da DANFE.
+
+    So' casa pela chave COMPLETA (44 digitos) -- identificador unico de verdade.
+    O fallback antigo, que caia pro numero curto da NF, foi removido daqui: ver
+    a nota em `buscar_por_numero_nf` sobre por que numero de NF sozinho nao
+    identifica pedido com seguranca.
+    """
     c = normalizar_codigo(chave_nfe)
-    if not c or len(c) != 44:
+    if not c or len(c) != 44 or not c.isdigit():
         return None
     try:
         with _get_conn() as conn:
+            if not _colunas_fiscais_ok(conn):
+                return None
             row = conn.execute(
                 "SELECT * FROM rastreio_pedidos WHERE chave_nfe = ? ORDER BY id LIMIT 1",
                 (c,),
             ).fetchone()
-            if row:
-                return dict(row)
-            # Fallback: tentar extrair numero da NF dos digitos 25..34
-            try:
-                num_nf = str(int(c[25:34]))
-                row_nf = conn.execute(
-                    "SELECT * FROM rastreio_pedidos WHERE numero_nf = ? ORDER BY id LIMIT 1",
-                    (num_nf,),
-                ).fetchone()
-                if row_nf:
-                    return dict(row_nf)
-            except Exception:
-                pass
-        return None
+        return dict(row) if row else None
     except sqlite3.Error as e:
         log.error("Erro ao buscar chave NF-e %s: %s", c, e)
         return None
 
 
-def buscar_por_numero_nf(numero_nf: str) -> dict | None:
-    """Retorna o registro do indice pelo numero sequencial da NF (ex: 434)."""
-    n = str(numero_nf).strip().lstrip("0")
+def buscar_por_numero_nf(numero_nf: str, canal: str | None = None) -> dict | None:
+    """Retorna o registro do indice pelo numero sequencial da NF (ex: 434).
+
+    ⚠️ SO' casa na coluna `numero_nf`, nunca por aproximacao. Numero de NF tem
+    1-9 digitos e NAO e' identificador global: duas notas de series/canais
+    diferentes podem repetir o mesmo sequencial, e um numero curto colide com o
+    final de qualquer pedido de marketplace (incidente 27/08 -- ver
+    `buscar_parcial`). Por isso:
+
+      * comparacao e' exata na coluna dedicada, com e sem zeros a esquerda;
+      * `canal` (opcional) estreita ainda mais quando o chamador souber a origem;
+      * se houver MAIS DE UM candidato, devolve None -- ambiguidade nao pode
+        virar bipagem errada; o operador resolve pelo tracking.
+    """
+    bruto = str(numero_nf).strip()
+    n = bruto.lstrip("0")
     if not n:
         return None
     try:
         with _get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM rastreio_pedidos WHERE numero_nf = ? OR numero_nf = ? ORDER BY id LIMIT 1",
-                (n, str(numero_nf).strip()),
-            ).fetchone()
-        return dict(row) if row else None
+            if not _colunas_fiscais_ok(conn):
+                return None
+            sql = "SELECT * FROM rastreio_pedidos WHERE (numero_nf = ? OR numero_nf = ?)"
+            params: list = [n, bruto]
+            if canal:
+                sql += " AND canal = ?"
+                params.append(str(canal).strip().lower())
+            sql += " ORDER BY id LIMIT 2"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        if len(rows) != 1:
+            if len(rows) > 1:
+                log.warning(
+                    "Numero de NF %s ambiguo (%d candidatos) -- ignorado por seguranca.",
+                    n, len(rows),
+                )
+            return None
+        return dict(rows[0])
     except sqlite3.Error as e:
         log.error("Erro ao buscar numero NF %s: %s", n, e)
         return None
@@ -423,27 +466,58 @@ def buscar_parcial(fragmento: str, limit: int = 8) -> list[dict]:
 
     Ordena PENDENTES primeiro (o que ainda falta bipar hoje e' o que ele
     quer), depois os ja conferidos. Dentro de cada grupo, os mais recentes.
+
+    ⚠️ ANCORAGEM ANTI-COLISAO (27/08, incidente real): fragmento puramente
+    NUMERICO curto casava no MEIO de qualquer numero e trazia o pedido errado.
+    Caso real: a "identificacao fiscal" extraiu o numero da NF `434` da chave
+    DANFE e o `LIKE '%434%'` casou com o pedido ML `2000017946805434` (termina
+    em 434) -- o scanner abriu uma CALCINHA quando a etiqueta era de uma meia
+    invisivel. Numero de NF tem 1-9 digitos; pedido de marketplace tem 16-18.
+    Colisao era questao de tempo, nao azar.
+
+    Regra agora:
+      * fragmento numerico com < 6 digitos  -> so casa por PREFIXO (`frag%`).
+        Sufixo tambem foi cortado: `434` casa como final de
+        `2000017946805434` -- exatamente a colisao do incidente. Quem digita
+        pouco digito ve poucos resultados, e completa ate' desambiguar.
+      * fragmento >= 6 chars ou com letras  -> mantem `%frag%` (espaco amostral
+        pequeno o suficiente, e rastreio alfanumerico nao colide na pratica).
+        Digitar o final do rastreio continua funcionando a partir de 6 digitos.
     """
     frag = normalizar_codigo(fragmento)
     if len(frag) < 3:
         return []
+
+    # Numero curto: so' prefixo. Qualquer outra coisa: busca livre.
+    if frag.isdigit() and len(frag) < 6:
+        clausula = (
+            "WHERE UPPER(r.tracking) LIKE ? "
+            "   OR UPPER(COALESCE(r.pedido_ecommerce,'')) LIKE ?"
+        )
+        params = (f"{frag}%", f"{frag}%")
+    else:
+        clausula = (
+            "WHERE UPPER(r.tracking) LIKE ? "
+            "   OR UPPER(COALESCE(r.pedido_ecommerce,'')) LIKE ?"
+        )
+        params = (f"%{frag}%", f"%{frag}%")
+
     try:
         with _get_conn() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT r.*,
                        CASE WHEN c.tracking IS NULL THEN 0 ELSE 1 END AS ja_conferido
                   FROM rastreio_pedidos r
                   LEFT JOIN conferencias c
                          ON c.tracking = r.tracking
                         AND date(c.conferido_em) = date('now','localtime')
-                 WHERE UPPER(r.tracking) LIKE ?
-                    OR UPPER(COALESCE(r.pedido_ecommerce,'')) LIKE ?
+                 {clausula}
                  GROUP BY r.tracking
                  ORDER BY ja_conferido ASC, r.id DESC
                  LIMIT ?
                 """,
-                (f"%{frag}%", f"%{frag}%", max(1, int(limit))),
+                (*params, max(1, int(limit))),
             ).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.Error as e:

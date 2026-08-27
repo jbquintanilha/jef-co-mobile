@@ -787,18 +787,20 @@ def resolver_codigo(codigo: str) -> dict | None:
     if reg:
         return _anexar_status(_montar_resultado_do_registro(reg, origem="indice"))
 
-    # 1b. Identificacao Fiscal Automatica: Chave DANFE de 44 digitos ou Numero de NF
+    # 1b. Identificacao Fiscal: SO' pela chave DANFE COMPLETA (44 digitos).
+    #
+    # ⚠️ O fallback "extrai o numero da NF da chave e busca por ele" foi
+    # REMOVIDO (incidente 27/08). A chave rendia um numero curto (ex: `434`)
+    # que era buscado solto no indice e casava com o final de um pedido de
+    # marketplace de 16 digitos (`2000017946805434`): o scanner abriu uma
+    # CALCINHA do Mercado Livre quando a etiqueta bipada era de uma meia
+    # invisivel do TikTok. Numero de NF nao e' identificador global -- a chave
+    # de 44 digitos e'. Se a chave nao casar, a cascata segue para tracking /
+    # pedido / Olist, que sao ancoras confiaveis.
     if len(codigo_limpo) == 44 and codigo_limpo.isdigit():
         reg_nfe = db.buscar_por_chave_nfe(codigo_limpo)
         if reg_nfe:
             return _anexar_status(_montar_resultado_do_registro(reg_nfe, origem="indice_nfe"))
-        try:
-            num_nf = str(int(codigo_limpo[25:34]))
-            reg_nf = db.buscar_por_numero_nf(num_nf)
-            if reg_nf:
-                return _anexar_status(_montar_resultado_do_registro(reg_nf, origem="indice_nfe"))
-        except Exception:
-            pass
 
     # 2. Match por numero de pedido no indice (extraido ou codigo cru)
     for alvo in (pedido_extraido, codigo_limpo):
