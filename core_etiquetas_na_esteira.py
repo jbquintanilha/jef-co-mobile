@@ -202,42 +202,37 @@ def gerar(*, com_cartao: bool = False,
 
     inicio = time.time()
 
-    # 1. Baixa os dois canais (ja' em paralelo la' dentro)
-    baixado = todas.baixar_tudo(com_cartao=com_cartao)
+    # 1. Baixa os três canais (TikTok + Shopee + ML) em paralelo
+    baixado = todas.baixar_tudo(canais=["tiktok", "shopee", "ml"], com_cartao=com_cartao, somente=somente)
     if not baixado.get("pdf"):
         # Mesmas chaves do caminho feliz: a tela le `resumo` e `erros` sem
         # checar, e um dict curto aqui quebraria a pagina com KeyError.
         return {"pdf": None, "total": 0, "fora_da_esteira": 0,
                 "por_canal": baixado.get("por_canal") or {},
-                "erros": baixado.get("erros") or ["nenhuma etiqueta baixada"],
+                "erros": baixado.get("erros") or ["Nenhuma etiqueta baixada nos canais"],
                 "segundos": round(time.time() - inicio, 1),
-                "resumo": "nenhuma etiqueta disponível"}
+                "resumo": "Nenhuma etiqueta disponível"}
 
     # 2. De qual pedido e' cada arquivo individual
-    #
-    # ⚠️ Os arquivos individuais sao CRUS: a Shopee entrega A4 e o recorte
-    # para 10x15 acontece depois, no PDF unificado de cada canal. Remontar a
-    # partir deles joga fora o recorte E o cartao de agradecimento.
-    # (medido em 19/08: PDF final saiu com 7 paginas A4 e sem cartao)
-    #
-    # Por isso cada arquivo cru e' NORMALIZADO aqui antes de entrar na pilha.
     import core_etiqueta_com_cartao as ccc
 
     mapa_tt = _mapa_tiktok()
     arquivos: list[tuple[str, str]] = []   # (caminho, numero_do_pedido)
 
-    for canal in ("tiktok", "shopee"):
+    for canal in ("tiktok", "shopee", "ml"):
         info = (baixado.get("por_canal") or {}).get(canal) or {}
-        for caminho in (info.get("arquivos") or []):
+        arqs_canal = info.get("arquivos") or []
+        # Se nao houver arquivos individuais mas houver PDF consolidado do canal
+        if not arqs_canal and info.get("pdf") and Path(info["pdf"]).exists():
+            arqs_canal = [info["pdf"]]
+
+        for caminho in arqs_canal:
+            if not Path(caminho).exists():
+                continue
             chave = Path(caminho).stem
 
-            # Recorta a folha A4 da Shopee para 10x15. O TikTok ja' vem no
+            # Recorta a folha A4 da Shopee para 10x15. O TikTok e ML ja' vem no
             # tamanho e a funcao devolve sem mexer.
-            #
-            # ⚠️ `normalizar_10x15` NAO sobrescreve: grava num `_10x15.pdf`
-            # ao lado e devolve o caminho em `saida`. Ignorar esse retorno
-            # deixa a pilha com o A4 original — foi o que aconteceu em 19/08
-            # (7 paginas A4 no PDF final).
             try:
                 res_norm = norm.normalizar_10x15(caminho)
                 if res_norm.get("saida") and Path(res_norm["saida"]).exists():
@@ -246,8 +241,6 @@ def gerar(*, com_cartao: bool = False,
                 log.warning("Normalizacao de %s falhou: %s", chave, exc)
 
             # Cartao de agradecimento DO CANAL, colado logo apos a etiqueta.
-            # Feito por arquivo (nao no PDF junto) para cada pedido receber o
-            # cartao do seu proprio canal mesmo com a pilha intercalada.
             if com_cartao:
                 alvo = caminho.replace(".pdf", "_cartao.pdf")
                 try:
@@ -257,8 +250,19 @@ def gerar(*, com_cartao: bool = False,
                 except Exception as exc:
                     log.warning("Cartao de %s falhou: %s", chave, exc)
 
-            # TikTok nomeia por pacote; Shopee ja' nomeia pelo pedido
+            # TikTok nomeia por pacote; Shopee e ML ja' nomeiam pelo pedido
             arquivos.append((caminho, mapa_tt.get(chave, chave)))
+
+    if not arquivos:
+        return {
+            "pdf": None,
+            "total": 0,
+            "fora_da_esteira": 0,
+            "por_canal": baixado.get("por_canal") or {},
+            "erros": baixado.get("erros") or ["Nenhuma etiqueta individual encontrada para montar a pilha."],
+            "segundos": round(time.time() - inicio, 1),
+            "resumo": "Nenhuma etiqueta disponível para montar a pilha",
+        }
 
     # 3. Posicao de cada pedido na esteira + numero da Olist + SKU vendido
     try:
@@ -271,14 +275,11 @@ def gerar(*, com_cartao: bool = False,
         mapa_olist = {}
         mapa_skus = {}
 
-
     # Pedido fora da esteira vai para o fim — nunca some.
     FIM = 10_000
     arquivos.sort(key=lambda x: ordem.get(x[1], FIM))
 
-    # ONDAS: tira o que ja' foi processado numa leva anterior. Aplicado
-    # DEPOIS da ordenacao para a numeracao #1..#N sair sequencial na pilha
-    # que vai de fato ser impressa.
+    # ONDAS: tira o que ja' foi processado numa leva anterior.
     filtrados = 0
     if somente is not None:
         _alvo = {str(x).strip().upper() for x in somente}
@@ -293,20 +294,33 @@ def gerar(*, com_cartao: bool = False,
     fora = sum(1 for _, num in arquivos if num not in ordem)
 
     # 4. Remonta na ordem certa, anotando onde comeca cada PEDIDO
-    #
-    # Com cartao, um pedido ocupa 2 paginas (etiqueta + cartao). O numero
-    # pertence ao PEDIDO, entao so' a primeira pagina de cada um e' carimbada:
-    # numerar o cartao faria a contagem saltar de 2 em 2 e nao bateria com o
-    # `#N` da etiqueta 40x25.
     destino = Path(saida) if saida else Path(baixado["pdf"])
     doc = fitz.open()
     primeira_pagina: list[int] = []
 
     for caminho, _ in arquivos:
-        parcial = fitz.open(caminho)
-        primeira_pagina.append(doc.page_count)   # onde este pedido comeca
-        doc.insert_pdf(parcial)
-        parcial.close()
+        if not Path(caminho).exists():
+            continue
+        try:
+            parcial = fitz.open(caminho)
+            if parcial.page_count > 0:
+                primeira_pagina.append(doc.page_count)   # onde este pedido comeca
+                doc.insert_pdf(parcial)
+            parcial.close()
+        except Exception as exc:
+            log.warning("Falha ao abrir PDF individual %s: %s", caminho, exc)
+
+    if doc.page_count == 0:
+        doc.close()
+        return {
+            "pdf": None,
+            "total": 0,
+            "fora_da_esteira": 0,
+            "por_canal": baixado.get("por_canal") or {},
+            "erros": ["Nenhuma página válida encontrada nas etiquetas para gerar o PDF."],
+            "segundos": round(time.time() - inicio, 1),
+            "resumo": "Nenhuma página de etiqueta disponível",
+        }
 
     # 5. Nome civil ao lado do apelido, ANTES de numerar.
     #
