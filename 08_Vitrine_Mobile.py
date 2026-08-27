@@ -1,10 +1,10 @@
 # ==============================================================================
 # NOME DO SCRIPT: 08_Vitrine_Mobile.py
-# DESCRICAO: Hub Mobile Oficial da Esteira de Expedição J&F Co. (Nuvem 24/7)
-# FUNCAO: Conexão direta com a Esteira de Separação, Conferência e Etiquetas
+# DESCRICAO: Hub Mobile Oficial da Expedição J&F Co. (Nuvem 24/7)
+# FUNCAO: Conexão com Esteira 7 Fases + Scanner / Bipador Consagrado
 # STATUS: ATIVO
-# VERSAO: 2.1
-# DATA: 26/08/2026
+# VERSAO: 3.0
+# DATA: 27/08/2026
 # AUTOR: Violino (000)
 # ==============================================================================
 
@@ -20,9 +20,8 @@ os.chdir(str(_RAIZ))
 import core_env_loader
 import streamlit as st
 
-
 st.set_page_config(
-    page_title="Esteira Expedição — J&F Co.",
+    page_title="Expedição & Scanner — J&F Co.",
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -59,13 +58,36 @@ if not st.session_state["autenticado_esteira"]:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# EXECUTA A ESTEIRA DE EXPEDIÇÃO OFICIAL
+# SELETOR DE MODO MOBILE (ESTEIRA 7 FASES vs SCANNER CONSAGRADO)
 # -----------------------------------------------------------------------------
-pagina_esteira = _RAIZ / "pages" / "17_Lista_Separacao.py"
+if "modo_mobile" not in st.session_state:
+    st.session_state["modo_mobile"] = "📦 Esteira (7 Fases)"
 
-if pagina_esteira.exists():
-    with open(pagina_esteira, "r", encoding="utf-8") as f:
-        codigo = f.read()
-    exec(codigo, globals())
+c_nav1, c_nav2 = st.columns([3, 1])
+with c_nav1:
+    modo_sel = st.radio(
+        "Modo de Operação:",
+        ["📦 Esteira (7 Fases)", "📷 Scanner / Bipador Dedicado"],
+        horizontal=True,
+        key="radio_modo_mobile",
+        label_visibility="collapsed",
+    )
+
+st.divider()
+
+if "Scanner" in modo_sel:
+    pagina_scanner = _RAIZ / "pages" / "14_Scanner_Conferencia.py"
+    if pagina_scanner.exists():
+        with open(pagina_scanner, "r", encoding="utf-8") as f:
+            codigo = f.read()
+        exec(codigo, globals())
+    else:
+        st.error("Arquivo 14_Scanner_Conferencia.py não encontrado.")
 else:
-    st.error("Arquivo da Esteira não encontrado.")
+    pagina_esteira = _RAIZ / "pages" / "17_Lista_Separacao.py"
+    if pagina_esteira.exists():
+        with open(pagina_esteira, "r", encoding="utf-8") as f:
+            codigo = f.read()
+        exec(codigo, globals())
+    else:
+        st.error("Arquivo 17_Lista_Separacao.py não encontrado.")

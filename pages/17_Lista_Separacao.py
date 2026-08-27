@@ -1614,34 +1614,25 @@ if fase(5):
             st.info("📱 Pelo celular: abra o mesmo endereço no Wi-Fi. "
                     "🔫 Pistola: clique no campo abaixo e bipe.")
 
-        # ---- Câmera do PC: fallback ------------------------------------- #
-        with st.expander("📷 Ler pela câmera do computador (fallback)",
-                         expanded=False):
-            # 🔴 DIVISÃO FIXA: a gravação fica com a webcam USB, a bipagem com
-            # a câmera do notebook. A USB é uma só — disputar as duas fazia o
-            # navegador falhar com "Could not start video source".
-            st.caption(
-                "Usa a **câmera do notebook**. A webcam USB fica reservada "
-                "para a gravação da fase 5, então as duas rodam ao mesmo tempo "
-                "sem brigar."
-            )
-            try:
-                import core_camera_seletor as ccam
-                ccam.render_camera_bipagem(altura=380, chave_query="bip",
-                                           botao_submit="Bipar")
-            except Exception as exc:
-                erro_visivel("6️⃣ Bipagem",
-                             "Câmera do PC indisponível — use o celular ou a digitação",
-                             exc, grave=False)
+        # ---- Scanner de Câmera Oficial Consagrado (AO VIVO + Foto Nativa) ---- #
+        try:
+            import scanner_camera_ao_vivo as cam_ao_vivo
+            cam_ao_vivo.render_camera(altura=320, botao_submit="Bipar", rearmar=True)
+        except Exception as exc:
+            st.warning(f"Câmera ao vivo indisponível: {exc}")
 
-        # ---- Digitação / pistola: 3+ caracteres acham o pedido ----------- #
-        # Mantida a busca parcial do Scanner: 3 letras de qualquer parte do
-        # código ou do nº do pedido já encontram (pedido do Jota).
-        codigo = st.text_input(
-            "Código de rastreio, nº do pedido ou 3+ caracteres:",
-            key="bip_codigo",
-            placeholder="Ex: AP296430628BR · 260802B4MD9MHU · ou só 3 caracteres",
-        )
+        # ---- Formulário de Bipagem / Pistola Bluetooth / Digitação Manual ---- #
+        with st.form("form_bipagem_fase6", clear_on_submit=True):
+            col_inp, col_btn = st.columns([3, 1])
+            with col_inp:
+                codigo = st.text_input(
+                    "Código de rastreio, nº do pedido ou 3+ caracteres:",
+                    key="bip_codigo",
+                    placeholder="Ex: AP296430628BR · 260802B4MD9MHU · ou pistola Bluetooth",
+                    label_visibility="collapsed",
+                )
+            with col_btn:
+                btn_bipar = st.form_submit_button("🔍 Bipar", use_container_width=True, type="primary")
 
         if codigo and len(codigo.strip()) >= 3:
             termo = codigo.strip()
@@ -1725,60 +1716,132 @@ if fase(5):
 
     avancar(6, "Bipagem feita — ir para a Conferência final")
 
-# ========================= FASE 7 — CONFERENCIA ============================= #
+# ========================= FASE 7 — CONFERENCIA FINAL ======================= #
 if fase(6):
-    st.subheader("7️⃣ Conferência final")
-    st.caption("Última parada antes do despacho: duplicata, faltante, divergência.")
+    st.subheader("7️⃣ Conferência final — fechar a bolsa de despacho")
+    st.caption("Última checagem antes de colocar na bolsa: bipe cada pacote para garantir 100% de precisão.")
 
-    if st.button("🔍 Rodar conferência completa", type="primary",
-                 use_container_width=True, key="btn_conferencia_final"):
-        with st.spinner("Cruzando todas as fontes..."):
-            try:
-                import core_cruzamento_expedicao as cce
-                st.session_state.cruzamento = cce.cruzar(situacoes=situacoes_sel)
-            except Exception as exc:
-                erro_visivel("7️⃣ Conferência", "Conferência final falhou", exc)
+    # Inicializa estados de conferência final se necessário
+    if "conf_final_bipados" not in st.session_state:
+        st.session_state.conf_final_bipados = {}
+    if "conf_final_fora_lista" not in st.session_state:
+        st.session_state.conf_final_fora_lista = []
+    if "conf_final_ultimo" not in st.session_state:
+        st.session_state.conf_final_ultimo = None
 
-    cruz = st.session_state.cruzamento
-    if not cruz:
-        st.caption("Rode a conferência para ver o resultado.")
-    else:
-        st.markdown(f"**{cruz['resumo']}**")
+    # Monta a lista de esperados a partir dos pedidos do lote
+    pedidos_lote = st.session_state.get("pedidos_brutos", [])
+    esperados = []
+    for p in pedidos_lote:
+        esperados.append({
+            "tracking": p.get("tracking") or p.get("codigo_rastreamento") or "",
+            "pedido_ecommerce": str(p.get("numero_ecommerce") or p.get("numero") or ""),
+            "canal": p.get("canal") or p.get("origem") or "MARKETPLACE",
+            "produto": p.get("descricao") or p.get("produto_nome") or "",
+            "sku": p.get("sku") or p.get("codigo") or "",
+            "cliente": (p.get("cliente") or {}).get("nome") if isinstance(p.get("cliente"), dict) else str(p.get("cliente") or ""),
+        })
 
-        graves = [d for d in cruz["divergencias"] if d["gravidade"] == "🔴"]
-        if not cruz["divergencias"]:
-            st.success("✅ Tudo conferido — nenhuma divergência. Liberado para despacho.")
-        elif not graves:
-            st.warning(
-                f"🟡 {len(cruz['divergencias'])} ponto(s) de atenção, nenhum grave. "
-                "Confira e libere se estiver certo."
-            )
+    total_esperados = len(esperados)
+    bipados_dict = st.session_state.conf_final_bipados
+    conferidos_qtd = len([1 for e in esperados if (e["tracking"] and e["tracking"] in bipados_dict) or (e["pedido_ecommerce"] and e["pedido_ecommerce"] in bipados_dict)])
+    faltam_qtd = max(total_esperados - conferidos_qtd, 0)
+
+    # Métricas de progresso
+    m1, m2, m3 = st.columns(3)
+    m1.metric("📦 No lote a despachar", total_esperados)
+    m2.metric("✅ Conferidos na bolsa", conferidos_qtd)
+    m3.metric("⏳ Faltam conferir", faltam_qtd)
+
+    if total_esperados > 0:
+        st.progress(min(conferidos_qtd / total_esperados, 1.0))
+
+    # Feedback do último bip
+    ult = st.session_state.conf_final_ultimo
+    if ult:
+        if ult.get("status") == "ok":
+            it = ult.get("item", {})
+            st.success(f"✅ **CONFERIDO COM SUCESSO**: `{ult.get('codigo')}` — {it.get('canal','')} · {it.get('produto') or it.get('sku')}")
+        elif ult.get("status") == "duplicado":
+            st.warning(f"⚠️ **PACOTE JÁ CONFERIDO ANTERIORMENTE**: `{ult.get('codigo')}` (Lido {ult.get('vezes', 2)}x)")
         else:
-            st.error(
-                f"🔴 {len(graves)} divergência(s) grave(s). "
-                "**Não bloqueia o despacho** — mas confira antes de fechar."
+            st.error(f"🚨 **PACOTE NÃO ENCONTRADO NO LOTE DE HOJE**: `{ult.get('codigo')}`")
+
+    # ---- Câmera ao Vivo Consagrada para Conferência Final ---- #
+    try:
+        import scanner_camera_ao_vivo as cam_ao_vivo
+        cam_ao_vivo.render_camera(altura=280, botao_submit="Conferir Final", rearmar=True)
+    except Exception as exc:
+        st.warning(f"Câmera ao vivo indisponível: {exc}")
+
+    # ---- Formulário de Bipagem / Pistola Bluetooth ---- #
+    with st.form("form_conf_final_bipagem", clear_on_submit=True):
+        c_inp, c_btn = st.columns([3, 1])
+        with c_inp:
+            cod_final = st.text_input(
+                "Código da etiqueta",
+                placeholder="Ex: AP296430628BR — bipe com a câmera, pistola ou digite",
+                label_visibility="collapsed",
+                key="inp_conf_final",
             )
+        with c_btn:
+            btn_sub = st.form_submit_button("🔍 Conferir Final", use_container_width=True, type="primary")
 
-        for d in cruz["divergencias"]:
-            linha = f"{d['gravidade']} **{d['tipo']}** · `{d['chave']}` — {d['detalhe']}"
-            if d["gravidade"] == "🔴":
-                st.error(linha)
-            elif d["gravidade"] == "🟡":
-                st.warning(linha)
+        if btn_sub and cod_final and cod_final.strip():
+            termo = cod_final.strip()
+            # Procura nos esperados por tracking ou pedido
+            match = None
+            for e in esperados:
+                t = e["tracking"]
+                p = e["pedido_ecommerce"]
+                if (t and termo.lower() in t.lower()) or (p and termo.lower() in p.lower()):
+                    match = e
+                    break
+
+            if match:
+                chave = match["tracking"] or match["pedido_ecommerce"]
+                if chave in bipados_dict:
+                    bipados_dict[chave] += 1
+                    st.session_state.conf_final_ultimo = {"status": "duplicado", "codigo": termo, "item": match, "vezes": bipados_dict[chave]}
+                else:
+                    bipados_dict[chave] = 1
+                    st.session_state.conf_final_ultimo = {"status": "ok", "codigo": termo, "item": match}
             else:
-                st.info(linha)
-
-    if dados:
-        st.divider()
-        st.markdown("#### 📄 Resumo do lote")
-        with st.expander("Texto para arquivo ou prancheta"):
-            st.text_area("Resumo:", value=cs.gerar_resumo_texto(dados),
-                         height=300, key="txt_resumo_final")
+                st.session_state.conf_final_fora_lista.append(termo)
+                st.session_state.conf_final_ultimo = {"status": "fora_lista", "codigo": termo}
+            st.rerun()
 
     st.divider()
-    if st.button("🔄 Começar novo lote", use_container_width=True,
-                 key="btn_novo_lote"):
+
+    # ---- Ações e Relatório de Cruzamento ---- #
+    col_a1, col_a2 = st.columns(2)
+    with col_a1:
+        if st.button("🔍 Cruzar Auditoria Completa (4 Fontes)", use_container_width=True):
+            with st.spinner("Auditando..."):
+                try:
+                    import core_cruzamento_expedicao as cce
+                    st.session_state.cruzamento = cce.cruzar(situacoes=situacoes_sel)
+                    st.success("Auditoria realizada!")
+                except Exception as exc:
+                    st.error(f"Falha na auditoria: {exc}")
+    with col_a2:
+        if st.button("🧹 Zerar Bipagens da Conferência", use_container_width=True):
+            st.session_state.conf_final_bipados = {}
+            st.session_state.conf_final_fora_lista = []
+            st.session_state.conf_final_ultimo = None
+            st.rerun()
+
+    if st.session_state.get("cruzamento"):
+        cruz = st.session_state.cruzamento
+        st.markdown(f"**{cruz.get('resumo', '')}**")
+        for d in cruz.get("divergencias", []):
+            st.warning(f"{d.get('gravidade', '🟡')} **{d.get('tipo', '')}** · `{d.get('chave', '')}` — {d.get('detalhe', '')}")
+
+    st.divider()
+    if st.button("🔄 Concluir Expedição e Começar Novo Lote", type="primary", use_container_width=True, key="btn_novo_lote"):
         st.session_state.fase_atual = 0
+        st.session_state.conf_final_bipados = {}
+        st.session_state.conf_final_ultimo = None
         limpar_erros()
         st.rerun()
 

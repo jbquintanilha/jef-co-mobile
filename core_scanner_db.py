@@ -26,7 +26,6 @@ Uso tipico:
 """
 
 from __future__ import annotations
-import core_env_loader
 
 import json
 import logging
