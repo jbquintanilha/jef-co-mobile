@@ -44,11 +44,18 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
+_RAIZ = Path(__file__).resolve().parent
+if str(_RAIZ) not in sys.path:
+    sys.path.insert(0, str(_RAIZ))
+
 import core_cache_expedicao as cache_mod
+
 
 log = logging.getLogger(__name__)
 
