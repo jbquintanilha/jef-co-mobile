@@ -45,76 +45,136 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Scanner de Conferência — J&F Co.", layout="wide", page_icon="📷")
 
+def _render_html(html_str: str) -> None:
+    """Renderiza HTML no Streamlit sem risco de ser interpretado como bloco de código Markdown."""
+    if not html_str:
+        return
+    linhas = [re.sub(r"^\s+", "", l) for l in html_str.strip().splitlines() if l.strip()]
+    st.markdown("".join(linhas), unsafe_allow_html=True)
+
+
 # ------------------------------------------------------------------ #
-# CSS (mesmo tema escuro da esteira)
+# CSS (Design System Moderno — Mobile First & Dark Mode Premium)
 # ------------------------------------------------------------------ #
 st.markdown(
     """
     <style>
     .scanner-card-ok {
-        background-color: #052e16;
-        border: 1px solid #16a34a;
-        border-radius: 12px;
+        background: linear-gradient(145deg, #064e3b 0%, #022c22 100%);
+        border: 2px solid #10b981;
+        border-radius: 14px;
         padding: 18px 20px;
-        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.4);
-        margin-bottom: 10px;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 15px rgba(16, 185, 129, 0.2);
+        margin-bottom: 12px;
     }
     .scanner-card-erro {
-        background-color: #450a0a;
-        border: 1px solid #dc2626;
-        border-radius: 12px;
+        background: linear-gradient(145deg, #450a0a 0%, #2a0404 100%);
+        border: 2px solid #ef4444;
+        border-radius: 14px;
         padding: 18px 20px;
-        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.4);
-        margin-bottom: 10px;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 15px rgba(239, 68, 68, 0.25);
+        margin-bottom: 12px;
     }
     .scanner-card-cancelado {
-        background-color: #7f1d1d;
+        background: linear-gradient(145deg, #7f1d1d 0%, #450a0a 100%);
         border: 3px solid #f87171;
-        border-radius: 12px;
+        border-radius: 14px;
         padding: 18px 20px;
-        box-shadow: 0 0 24px rgb(239 68 68 / 0.45);
-        margin-bottom: 10px;
+        box-shadow: 0 0 28px rgba(239, 68, 68, 0.5);
+        margin-bottom: 12px;
         animation: scanner-pulso 1.2s ease-in-out infinite;
     }
     @keyframes scanner-pulso {
-        0%, 100% { box-shadow: 0 0 10px rgb(239 68 68 / 0.35); }
-        50%      { box-shadow: 0 0 28px rgb(239 68 68 / 0.75); }
+        0%, 100% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.35); }
+        50%      { box-shadow: 0 0 32px rgba(239, 68, 68, 0.85); }
     }
-    .scanner-titulo-cancelado { font-size: 20px; font-weight: 800; color: #ffffff; }
+    .scanner-titulo-cancelado { font-size: 20px; font-weight: 900; color: #ffffff; letter-spacing: .5px; }
     .scanner-status-cancelado {
-        display: inline-block; padding: 3px 12px; border-radius: 20px;
+        display: inline-block; padding: 4px 14px; border-radius: 20px;
         background-color: #ef4444; color: #ffffff; font-weight: 800; font-size: 13px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
     }
     .scanner-aviso-cancelado {
-        margin-top: 12px; padding: 10px 12px; border-radius: 8px;
-        background-color: #450a0a; border: 1px solid #ef4444; color: #fecaca; font-size: 14px;
+        margin-top: 14px; padding: 12px 14px; border-radius: 10px;
+        background-color: #450a0a; border: 1.5px solid #ef4444; color: #fecaca; font-size: 14px;
     }
     a.btn-cancelado {
-        display: block; text-align: center; padding: 12px 16px; border-radius: 8px;
+        display: block; text-align: center; padding: 14px 16px; border-radius: 10px;
         background: linear-gradient(135deg, #f59e0b, #d97706); color: #1c1917;
         font-weight: 800; font-size: 15px; text-decoration: none;
-        border: 1px solid #b45309; box-shadow: 0 2px 6px rgb(0 0 0 / 0.4);
-        margin-bottom: 6px;
+        border: 1px solid #b45309; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+        margin-bottom: 8px;
     }
     a.btn-cancelado:hover { filter: brightness(1.1); }
     a.btn-ignorar {
-        display: block; text-align: center; padding: 12px 16px; border-radius: 8px;
+        display: block; text-align: center; padding: 14px 16px; border-radius: 10px;
         background-color: #334155; color: #e2e8f0; font-weight: 700; font-size: 15px;
-        text-decoration: none; border: 1px solid #475569; margin-bottom: 6px;
+        text-decoration: none; border: 1px solid #475569; margin-bottom: 8px;
     }
     a.btn-ignorar:hover { background-color: #475569; }
-    .scanner-titulo { font-size: 18px; font-weight: 700; color: #f1f5f9; }
-    .scanner-linha  { font-size: 14px; color: #e2e8f0; margin: 6px 0; }
-    .scanner-label  { color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
-    .scanner-tag {
-        display: inline-block; padding: 2px 10px; border-radius: 20px;
-        font-size: 12px; font-weight: 700; color: #0f172a; background-color: #e2e8f0;
+    .scanner-titulo { font-size: 19px; font-weight: 800; color: #f8fafc; letter-spacing: .5px; }
+    .scanner-label { color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 2px; }
+    
+    /* Box de especificações em Grid responsivo */
+    .scanner-grid-especs {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 10px;
+        margin: 14px 0 12px;
     }
-    .scanner-tag-ml { background-color: #ffe600; }
-    .scanner-tag-shopee { background-color: #ee4d2d; color: white; }
-    .scanner-tag-tiktok { background-color: #111827; color: white; border: 1px solid #374151; }
-    .scanner-tag-correios { background-color: #2563eb; color: white; }
-    .scanner-tag-manual { background-color: #64748b; color: white; }
+    .scanner-box-spec {
+        border-radius: 10px;
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    
+    /* Painel de Metadados elegante */
+    .scanner-meta-panel {
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+        padding: 12px 16px;
+        margin-top: 14px;
+    }
+    .scanner-meta-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        font-size: 13.5px;
+    }
+    .scanner-meta-row:last-child {
+        border-bottom: none;
+    }
+    .scanner-meta-lbl {
+        color: #94a3b8;
+        font-size: 12px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .scanner-meta-val {
+        color: #f1f5f9;
+        font-weight: 600;
+        text-align: right;
+    }
+
+    /* Badges de canais modernizados */
+    .scanner-tag {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 4px 12px; border-radius: 20px;
+        font-size: 12px; font-weight: 800; letter-spacing: .4px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+    }
+    .scanner-tag-ml { background: linear-gradient(135deg, #ffe600, #facc15); color: #1e293b; border: 1px solid #eab308; }
+    .scanner-tag-shopee { background: linear-gradient(135deg, #ee4d2d, #ff5722); color: #ffffff; border: 1px solid #ea580c; }
+    .scanner-tag-tiktok { background: linear-gradient(135deg, #09090b, #18181b); color: #00f2fe; border: 1.5px solid #00f2fe; box-shadow: 0 0 10px rgba(0, 242, 254, 0.35); }
+    .scanner-tag-correios { background: linear-gradient(135deg, #1d4ed8, #2563eb); color: #ffffff; border: 1px solid #3b82f6; }
+    .scanner-tag-manual { background: linear-gradient(135deg, #475569, #64748b); color: #ffffff; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -146,14 +206,14 @@ def tag_canal(canal: str) -> str:
     """HTML do badge do canal."""
     c = (canal or "").lower()
     if "mercado" in c:
-        return '<span class="scanner-tag scanner-tag-ml">ML</span>'
+        return '<span class="scanner-tag scanner-tag-ml">🤝 MERCADO LIVRE</span>'
     if "shopee" in c:
-        return '<span class="scanner-tag scanner-tag-shopee">SHOPEE</span>'
+        return '<span class="scanner-tag scanner-tag-shopee">🛍️ SHOPEE</span>'
     if "tiktok" in c:
-        return '<span class="scanner-tag scanner-tag-tiktok">TIKTOK</span>'
+        return '<span class="scanner-tag scanner-tag-tiktok">🎵 TIKTOK SHOP</span>'
     if "correio" in c:
-        return '<span class="scanner-tag scanner-tag-correios">CORREIOS</span>'
-    return f'<span class="scanner-tag scanner-tag-manual">{str(canal or "MANUAL").upper()}</span>'
+        return '<span class="scanner-tag scanner-tag-correios">📮 CORREIOS</span>'
+    return f'<span class="scanner-tag scanner-tag-manual">📦 {str(canal or "MANUAL").upper()}</span>'
 
 
 # Decodificacao de QR/barcode vem de core_scanner_decoder (reutilizavel/testavel).
@@ -854,31 +914,45 @@ if res and res.get("encontrado"):
                 cancelado_em = _dt_cancel.datetime.fromisoformat(cancelado_em).strftime("%d/%m/%Y %H:%M")
             except (ValueError, TypeError):
                 pass
-        st.markdown(
-            f"""
-            <div class="scanner-card-cancelado">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span class="scanner-titulo-cancelado">🚨 PEDIDO CANCELADO — NÃO ENVIAR</span>
-                    {badge}
+        
+        card_cancel_html = f"""
+        <div class="scanner-card-cancelado">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <span class="scanner-titulo-cancelado">🚨 PEDIDO CANCELADO — NÃO ENVIAR</span>
+                {badge}
+            </div>
+            <div class="scanner-aviso-cancelado">
+                ⚠️ Este pedido foi <b>CANCELADO</b> pelo comprador ou marketplace. <b>NÃO EMBALAR / NÃO DESPACHAR.</b>
+            </div>
+            <div class="scanner-meta-panel" style="background:rgba(0,0,0,0.4); border-color:rgba(239,68,68,0.3);">
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">📦 Produto</span>
+                    <span class="scanner-meta-val">{res.get('produto') or res.get('modelo') or '—'}</span>
                 </div>
-                <div class="scanner-linha" style="margin-top:12px;">
-                    <span class="scanner-label">Produto</span><br>
-                    <b style="font-size:17px;">{res.get('produto') or res.get('modelo') or '—'}</b>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">🏷️ SKU</span>
+                    <span class="scanner-meta-val"><code>{res.get('sku') or '—'}</code></span>
                 </div>
-                <div class="scanner-linha"><span class="scanner-label">SKU</span><br><code>{res.get('sku') or '—'}</code></div>
-                <div class="scanner-linha"><span class="scanner-label">Cliente</span><br>{primeiro_nome}</div>
-                <div class="scanner-linha"><span class="scanner-label">CEP</span><br>{mascarar_cep(res.get('cep'))}</div>
-                <div class="scanner-linha"><span class="scanner-label">Cancelado em</span><br>{cancelado_em}</div>
-                <div class="scanner-linha"><span class="scanner-label">Status</span><br>
-                    <span class="scanner-status-cancelado">CANCELADO ({canal_nome})</span></div>
-                <div class="scanner-aviso-cancelado">
-                    ⚠️ Este pedido foi cancelado pelo comprador ou pela plataforma.
-                    <b>NÃO DESPACHAR.</b>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">👤 Cliente</span>
+                    <span class="scanner-meta-val">{primeiro_nome}</span>
+                </div>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">📍 CEP</span>
+                    <span class="scanner-meta-val">{mascarar_cep(res.get('cep'))}</span>
+                </div>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">⏰ Cancelado em</span>
+                    <span class="scanner-meta-val" style="color:#fca5a5;">{cancelado_em}</span>
+                </div>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">📊 Status</span>
+                    <span class="scanner-meta-val"><span class="scanner-status-cancelado">CANCELADO ({canal_nome.upper()})</span></span>
                 </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        </div>
+        """
+        _render_html(card_cancel_html)
 
         col_c1, col_c2 = st.columns(2)
         with col_c1:
@@ -898,85 +972,51 @@ if res and res.get("encontrado"):
         if res.get("status_pedido") == "NAO_VERIFICADO":
             st.warning(res.get("alerta") or "⚠️ Status do pedido não verificado. Confirme antes de enviar.")
 
-        # Cor do destaque conforme o genero da peca (pedido do Jota): as femininas
-        # saem em rosa e as masculinas em verde, pra diferenciar de relance na
-        # bancada sem precisar ler o texto.
+        # Cor do destaque conforme o genero da peca
         _fem = res.get("genero") == "fem"
-        cor_destaque = "#f472b6" if _fem else "#22c55e"
-        borda_destaque = "#9d174d" if _fem else "#334155"
-        fundo_destaque = "#2a0a1c" if _fem else "#0f172a"
+        cor_destaque = "#f472b6" if _fem else "#34d399"
+        borda_destaque = "#9d174d" if _fem else "#059669"
+        fundo_destaque = "#2a0a1c" if _fem else "#064e3b"
 
-        modelo = res.get("modelo") or "—"
+        modelo = res.get("modelo") or res.get("produto") or "—"
         spu = res.get("spu") or ""
 
-        # Foto da variacao vendida (a mesma do anuncio). Confere de relance se a
-        # peca na mao bate com o que o cliente comprou — cor e kit errados saltam
-        # aos olhos na imagem antes de qualquer leitura de texto.
+        # Foto da variacao vendida
         _img_ficha = res.get("imagem_url") or ""
         _bloco_img = (
-            f'<img src="{_img_ficha}" alt="Foto do produto vendido" '
-            f'style="width:96px;height:96px;object-fit:cover;border-radius:10px;'
-            f'border:2px solid {borda_destaque};flex-shrink:0;">'
-            if _img_ficha else ""
+            f'<div style="width:105px; height:105px; border-radius:12px; overflow:hidden; border:2px solid {borda_destaque}; flex-shrink:0; box-shadow:0 4px 10px rgba(0,0,0,0.4);">'
+            f'<img src="{_img_ficha}" alt="Foto do produto" style="width:100%; height:100%; object-fit:cover;">'
+            f'</div>'
+            if _img_ficha else
+            f'<div style="width:105px; height:105px; border-radius:12px; background:#0f172a; border:2px solid {borda_destaque}; display:flex; align-items:center; justify-content:center; font-size:36px; flex-shrink:0;">📦</div>'
         )
 
-        # -------------------------------------------------------------- #
-        # PEDIDO MULTI-ITEM — varias pecas na MESMA etiqueta.
-        # Fica DENTRO do card verde, no topo: a ficha abaixo mostra so a peca
-        # principal, e sem esta lista a bancada fecha caixa faltando item
-        # (incidente AP341455035BR: 4 itens, aparecia 1).
-        # -------------------------------------------------------------- #
         _itens_ped = res.get("itens") or []
-
-        # ---------------------------------------------------------------- #
-        # 🔴 MESMO KIT COMPRADO N VEZES — o caso que passava batido
-        #
-        # O bloco vermelho abaixo so' dispara com `len(itens) > 1`, ou seja,
-        # LINHAS diferentes. Mas o cliente que compra 2x o MESMO kit gera UMA
-        # linha com `quantidade: 2` -- `len()` continua 1, nenhum alerta
-        # aparecia, e o card grande mostrava so' "Kit 3 / Preto".
-        # A bancada embalava UM (pedido 530 / 2608259F0CQBNS, achado 25/08).
-        #
-        # Historico: 8 pedidos assim desde maio, 10 pecas que poderiam ter
-        # faltado -- um deles com quantidade 4.
-        #
-        # ⚠️ CALCULADO AQUI (soma de `quantidade`) — nao a partir de
-        # `res["alerta_volume"]`. Motivo: `alerta_volume` vem do INDICE
-        # (gravado quando o populator rodou), pode estar VAZIO se o pedido
-        # entrou no indice antes desta coluna existir ou antes do proximo
-        # "Atualizar Base". Somar aqui e' auto-suficiente e nunca falha por
-        # indice desatualizado. O papel de `alerta_volume` e' outro: ele vem
-        # da MESMA funcao (`core_separacao.processar_batch_picking`) que a
-        # Esteira usa pra classificar, entao os dois sistemas NUNCA discordam
-        # sobre o criterio — so' pode haver defasagem de quando cada um
-        # rodou por ultimo, nunca de regra (Jota, 25/08: "importar a mesma
-        # lista de separação... conjuntos com mais de 1 item").
         _volumes = sum(int(i.get("quantidade") or 1) for i in _itens_ped) or 1
-        _card_volumes = ""
+        
+        _card_volumes_html = ""
         if _volumes > 1:
-            _card_volumes = (
-                '<div style="flex:1; min-width:130px; background:#450a0a;'
-                'border:3px solid #ef4444; border-radius:10px; padding:12px 16px;">'
-                '<div class="scanner-label" style="color:#fca5a5;">Volumes</div>'
-                f'<div style="font-size:34px; font-weight:900; color:#fecaca;'
-                f'line-height:1.1;">{_volumes}x</div></div>'
-            )
+            _card_volumes_html = f"""
+            <div class="scanner-box-spec" style="background:#450a0a; border:2.5px solid #ef4444;">
+                <div class="scanner-label" style="color:#fca5a5;">Volumes</div>
+                <div style="font-size:28px; font-weight:900; color:#fecaca; line-height:1.1;">{_volumes}x</div>
+            </div>
+            """
 
-        _bloco_itens = ""
+        _bloco_itens_html = ""
         if _volumes > 1 and len(_itens_ped) <= 1:
-            # Uma linha só, mas várias unidades: aviso próprio, porque o
-            # bloco de multi-item abaixo não cobre este caso.
             _it0 = _itens_ped[0] if _itens_ped else {}
-            _bloco_itens = (
-                '<div style="background:#450a0a;border:3px solid #ef4444;'
-                'border-radius:10px;padding:16px;margin:14px 0;">'
-                '<div style="font-size:26px;font-weight:900;color:#fca5a5;">'
-                f'⚠️ {_volumes} UNIDADES DO MESMO KIT</div>'
-                '<div style="font-size:16px;color:#fecaca;margin-top:6px;">'
-                f'O cliente comprou <b>{_volumes}x</b> '
-                f'{_it0.get("sku") or res.get("sku") or ""}. '
-                f'Coloque <b>{_volumes} kits</b> na caixa, não um.</div></div>'
-            )
+            _bloco_itens_html = f"""
+            <div style="background:#450a0a; border:2.5px solid #ef4444; border-radius:12px; padding:14px 16px; margin:12px 0;">
+                <div style="font-size:22px; font-weight:900; color:#fca5a5; display:flex; align-items:center; gap:8px;">
+                    ⚠️ {_volumes} UNIDADES DO MESMO KIT
+                </div>
+                <div style="font-size:14px; color:#fecaca; margin-top:6px;">
+                    O cliente comprou <b>{_volumes}x</b> {_it0.get('sku') or res.get('sku') or ''}.
+                    Coloque <b>{_volumes} kits</b> na caixa, não um só.
+                </div>
+            </div>
+            """
         elif len(_itens_ped) > 1:
             _linhas = []
             for _i, _it in enumerate(_itens_ped, 1):
@@ -984,81 +1024,94 @@ if res and res.get("encontrado"):
                 _var = _it.get("variacao") or _it.get("cor") or ""
                 _qtd = int(_it.get("quantidade") or 1)
                 _thumb = (
-                    f'<img src="{_im}" style="width:54px;height:54px;object-fit:cover;'
-                    f'border-radius:8px;flex-shrink:0;">'
+                    f'<img src="{_im}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0;">'
                     if _im else
-                    '<div style="width:54px;height:54px;border-radius:8px;background:#1e293b;'
-                    'display:flex;align-items:center;justify-content:center;font-size:22px;'
-                    'flex-shrink:0;">📦</div>'
+                    '<div style="width:48px;height:48px;border-radius:8px;background:#1e293b;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">📦</div>'
                 )
                 _linhas.append(
-                    f'<div style="display:flex;gap:10px;align-items:center;padding:8px 10px;'
-                    f'background:rgba(0,0,0,.25);border-radius:8px;margin-bottom:6px;">'
+                    f'<div style="display:flex;gap:10px;align-items:center;padding:8px 10px;background:rgba(0,0,0,.3);border-radius:8px;margin-bottom:6px;">'
                     f'{_thumb}'
-                    f'<div style="min-width:0;">'
-                    f'<div style="font-size:15px;font-weight:700;color:#fecaca;">'
+                    f'<div style="min-width:0;flex:1;">'
+                    f'<div style="font-size:14px;font-weight:700;color:#fecaca;">'
                     f'{_i}. {_it.get("sku") or "—"}'
                     + (f' · {_var}' if _var else '')
-                    + (f' · {_qtd}x' if _qtd > 1 else '')
+                    + (f' · <b>{_qtd}x</b>' if _qtd > 1 else '')
                     + '</div>'
-                    f'<div style="font-size:12px;color:#cbd5e1;overflow:hidden;'
-                    f'text-overflow:ellipsis;white-space:nowrap;">'
-                    f'{(_it.get("nome") or "")[:70]}</div>'
+                    f'<div style="font-size:12px;color:#cbd5e1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+                    f'{(_it.get("nome") or "")[:65]}</div>'
                     f'</div></div>'
                 )
             _total_un = sum(int(i.get("quantidade") or 1) for i in _itens_ped)
-            _bloco_itens = (
-                '<div style="background:#450a0a;border:2px solid #ef4444;border-radius:10px;'
-                'padding:14px 16px;margin:14px 0;">'
-                f'<div style="font-size:19px;font-weight:800;color:#fca5a5;margin-bottom:4px;">'
-                f'⚠️ PEDIDO COM {len(_itens_ped)} ITENS — SEPARE TODOS</div>'
-                f'<div style="font-size:13px;color:#fecaca;margin-bottom:10px;">'
-                f'Mesma etiqueta, <b>{_total_un} volume(s)</b> na caixa. '
-                'Confira item por item antes de fechar.</div>'
-                + "".join(_linhas) +
-                '</div>'
-            )
-
-        # Ficha grande: modelo, cor e quantidade em destaque, porque esta parte e'
-        # lida de relance com a caixa na mao.
-        st.markdown(
-            f"""
-            <div class="scanner-card-ok">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span class="scanner-titulo">🟢 SEPARAR ESTE PEDIDO</span>
-                    {badge}
-                </div>{_bloco_itens}
-                <div style="display:flex; gap:10px; flex-wrap:wrap; margin:16px 0 12px; align-items:stretch;">{_bloco_img}<div style="flex:1; min-width:150px; background:{fundo_destaque}; border:1px solid {borda_destaque}; border-radius:10px; padding:12px 16px;">
-                        <div class="scanner-label">Produto</div>
-                        <div style="font-size:24px; font-weight:800; color:{cor_destaque}; line-height:1.15;">{modelo}</div>
-                        <div style="font-size:13px; color:#cbd5e1; margin-top:6px; letter-spacing:.5px;">
-                            SPU <b style="color:#f8fafc;">{spu or '—'}</b>
-                        </div>
-                    </div>
-                    <div style="flex:1; min-width:110px; background:{fundo_destaque}; border:1px solid {borda_destaque}; border-radius:10px; padding:12px 16px;">
-                        <div class="scanner-label">Tamanho</div>
-                        <div style="font-size:24px; font-weight:800; color:{cor_destaque}; line-height:1.2;">{res.get('tamanho') or '—'}</div>
-                    </div>
-                    <div style="flex:1; min-width:130px; background:{fundo_destaque}; border:1px solid {borda_destaque}; border-radius:10px; padding:12px 16px;">
-                        <div class="scanner-label">Cor</div>
-                        <div style="font-size:22px; font-weight:800; color:{cor_destaque}; line-height:1.2;">{res.get('cor') or '—'}</div>
-                    </div>
-                    <div style="flex:1; min-width:120px; background:{fundo_destaque}; border:1px solid {borda_destaque}; border-radius:10px; padding:12px 16px;">
-                        <div class="scanner-label">Kit</div>
-                        <div style="font-size:24px; font-weight:800; color:{cor_destaque};">{res.get('kit') or 'Unitário'}</div>
-                    </div>
-                    {_card_volumes}
+            _bloco_itens_html = f"""
+            <div style="background:#450a0a; border:2.5px solid #ef4444; border-radius:12px; padding:14px 16px; margin:12px 0;">
+                <div style="font-size:19px; font-weight:900; color:#fca5a5; margin-bottom:4px;">
+                    ⚠️ PEDIDO COM {len(_itens_ped)} ITENS — SEPARE TODOS
                 </div>
-                <div class="scanner-linha" style="color:#cbd5e1;">{res.get('produto') or '—'}</div>
-                <div class="scanner-linha"><span class="scanner-label">SKU</span><br><code>{res.get('sku') or '—'}</code></div>
-                <div class="scanner-linha"><span class="scanner-label">Cliente</span><br>{primeiro_nome}</div>
-                <div class="scanner-linha"><span class="scanner-label">CEP</span><br>{mascarar_cep(res.get('cep'))}</div>
-                <div class="scanner-linha"><span class="scanner-label">Tracking</span><br><code>{res.get('tracking') or '—'}</code></div>
-                <div class="scanner-linha"><span class="scanner-label">Pedido e-commerce</span><br>{res.get('pedido_ecommerce') or '—'}</div>
+                <div style="font-size:13px; color:#fecaca; margin-bottom:10px;">
+                    Mesma etiqueta, <b>{_total_un} volume(s)</b> no pacote. Confira item por item.
+                </div>
+                {''.join(_linhas)}
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            """
+
+        # Ficha do Pedido
+        card_sucesso_html = f"""
+        <div class="scanner-card-ok">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <span class="scanner-titulo">🟢 SEPARAR ESTE PEDIDO</span>
+                {badge}
+            </div>
+            {_bloco_itens_html}
+            <div style="display:flex; gap:12px; align-items:center; margin:14px 0 10px; flex-wrap:wrap;">
+                {_bloco_img}
+                <div style="flex:1; min-width:180px; background:{fundo_destaque}; border:1.5px solid {borda_destaque}; border-radius:12px; padding:12px 16px;">
+                    <div class="scanner-label">Produto</div>
+                    <div style="font-size:22px; font-weight:900; color:{cor_destaque}; line-height:1.2;">{modelo}</div>
+                    <div style="font-size:13px; color:#cbd5e1; margin-top:4px;">
+                        SPU <b style="color:#f8fafc;">{spu or '—'}</b>
+                    </div>
+                </div>
+            </div>
+            <div class="scanner-grid-especs">
+                <div class="scanner-box-spec" style="background:{fundo_destaque}; border:1.5px solid {borda_destaque};">
+                    <div class="scanner-label">Tamanho</div>
+                    <div style="font-size:24px; font-weight:900; color:{cor_destaque}; line-height:1.2;">{res.get('tamanho') or '—'}</div>
+                </div>
+                <div class="scanner-box-spec" style="background:{fundo_destaque}; border:1.5px solid {borda_destaque};">
+                    <div class="scanner-label">Cor</div>
+                    <div style="font-size:22px; font-weight:900; color:{cor_destaque}; line-height:1.2;">{res.get('cor') or '—'}</div>
+                </div>
+                <div class="scanner-box-spec" style="background:{fundo_destaque}; border:1.5px solid {borda_destaque};">
+                    <div class="scanner-label">Kit</div>
+                    <div style="font-size:24px; font-weight:900; color:{cor_destaque}; line-height:1.2;">{res.get('kit') or 'Unitário'}</div>
+                </div>
+                {_card_volumes_html}
+            </div>
+            <div class="scanner-meta-panel">
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">🏷️ SKU Principal</span>
+                    <span class="scanner-meta-val"><code>{res.get('sku') or '—'}</code></span>
+                </div>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">👤 Cliente</span>
+                    <span class="scanner-meta-val">{primeiro_nome}</span>
+                </div>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">📍 CEP Destino</span>
+                    <span class="scanner-meta-val">{mascarar_cep(res.get('cep'))}</span>
+                </div>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">🚚 Rastreio</span>
+                    <span class="scanner-meta-val"><code>{res.get('tracking') or '—'}</code></span>
+                </div>
+                <div class="scanner-meta-row">
+                    <span class="scanner-meta-lbl">🛒 Pedido E-commerce</span>
+                    <span class="scanner-meta-val">{res.get('pedido_ecommerce') or '—'}</span>
+                </div>
+            </div>
+        </div>
+        """
+        _render_html(card_sucesso_html)
 
         st.info("Confira o produto, a cor e a quantidade antes de fechar a caixa.")
 
@@ -1133,42 +1186,37 @@ if res and res.get("encontrado"):
 
 elif res and res.get("codigo_invalido"):
     # ----- 🟠 CODIGO LIDO NAO SERVE (chave de NF-e, CEP...) -----
-    # Nao adianta mandar "atualizar base": o problema nao e' base desatualizada,
-    # e' que a pistola pegou o codigo errado da etiqueta.
-    st.markdown(
-        f"""
-        <div class="scanner-card-erro" style="background-color:#431407; border-color:#ea580c;">
-            <div class="scanner-titulo">🟠 CÓDIGO ERRADO DA ETIQUETA</div>
-            <div class="scanner-linha">{res.get('motivo')}</div>
-            <div class="scanner-linha" style="color:#94a3b8;">
-                Lido: <code>{codigo_atual}</code>
+    card_invalido_html = f"""
+    <div class="scanner-card-erro" style="background:linear-gradient(145deg, #431407 0%, #270a04 100%); border-color:#ea580c; box-shadow:0 10px 25px rgba(0,0,0,0.5), 0 0 15px rgba(234,88,12,0.25);">
+        <div class="scanner-titulo" style="color:#fdba74;">🟠 CÓDIGO ERRADO DA ETIQUETA</div>
+        <div style="font-size:14px; color:#fed7aa; margin:8px 0;">{res.get('motivo')}</div>
+        <div class="scanner-meta-panel" style="background:rgba(0,0,0,0.3); border-color:rgba(234,88,12,0.2); margin-top:8px;">
+            <div class="scanner-meta-row">
+                <span class="scanner-meta-lbl">🔍 Código Lido</span>
+                <span class="scanner-meta-val"><code>{codigo_atual}</code></span>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    </div>
+    """
+    _render_html(card_invalido_html)
     if st.button("📷 LER O CÓDIGO DE RASTREIO", type="primary", use_container_width=True):
         _limpar_leitura()
         st.rerun()
 
 elif tem_leitura:
     # ----- 🔴 NAO ENCONTRADO -----
-    st.markdown(
-        f"""
-        <div class="scanner-card-erro">
-            <div class="scanner-titulo">🔴 NÃO ENCONTRADO</div>
-            <div class="scanner-linha">
-                Nenhum pedido casou com <code>{codigo_atual}</code>.
-            </div>
-            <div class="scanner-linha" style="color:#94a3b8;">
-                Causa mais comum: <b>venda nova</b> — a etiqueta foi gerada depois da
-                última sincronização, então o rastreio ainda não está na base.
-                Toque em <b>🔄 Atualizar e tentar de novo</b> abaixo.
-            </div>
+    card_nao_achado_html = f"""
+    <div class="scanner-card-erro">
+        <div class="scanner-titulo">🔴 PEDIDO NÃO ENCONTRADO NA BASE</div>
+        <div style="font-size:14px; color:#fecaca; margin:8px 0;">
+            Nenhum pedido casou com o código <code>{codigo_atual}</code>.
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        <div style="font-size:13px; color:#cbd5e1; background:rgba(0,0,0,0.3); padding:10px 12px; border-radius:8px; margin-top:8px;">
+            💡 <b>Venda recente?</b> Se a etiqueta foi gerada há pouco, clique em <b>🔄 Atualizar e tentar de novo</b> abaixo.
+        </div>
+    </div>
+    """
+    _render_html(card_nao_achado_html)
 
     col_re, col_outro = st.columns(2)
     with col_re:
