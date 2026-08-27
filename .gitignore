@@ -1,0 +1,45 @@
+# ==============================================================================
+# .gitignore — jef-co-mobile (REPOSITORIO PUBLICO)
+#
+# ⚠️ Este repo e' PUBLICO. Nada de credencial, token ou banco de dados aqui.
+# Incidente 27/08/2026: `local_db/ml_tokens.json` foi commitado com
+# access_token/refresh_token reais do Mercado Livre, e `rastreio_pedidos.db`
+# subiu com um vinculo errado que fazia o scanner abrir o pedido errado na
+# bancada. Os dois foram removidos do historico.
+# ==============================================================================
+
+# --- Credenciais e segredos (NUNCA versionar) ---
+.env
+.env.*
+!.env.example
+*token*.json
+*secret*
+*credential*
+*.pem
+*.key
+.streamlit/secrets.toml
+
+# --- Bancos locais ---
+# O SQLite do scanner e' estado de RUNTIME, populado a cada expedicao.
+# Versionar fazia o deploy sobrescrever o indice real com uma foto velha --
+# e um vinculo errado voltava a cada deploy, sobrevivendo a qualquer correcao
+# de codigo.
+local_db/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- Sistema / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
