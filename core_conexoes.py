@@ -1,3 +1,14 @@
+# ==============================================================================
+# NOME DO SCRIPT: core_conexoes.py
+# DESCRICAO: Biblioteca principal de funcoes/classes core.
+# FUNCAO: 
+# STATUS: PENDENTE_REVISAO
+# MOTOR: Monge (003)
+# VERSAO: 1.0
+# DATA: 16/05/2026
+# AUTOR: Violino (000)
+# ==============================================================================
+
 import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -6,7 +17,7 @@ import os
 DIRETORIO_ATUAL = os.path.dirname(os.path.abspath(__file__))
 ARQUIVO_CREDENCIAS = os.path.join(DIRETORIO_ATUAL, 'credentials.json')
 PLANILHA_ID = "1W8SjACUcNMlyG_zq9DppOt7MahSwIhuMecv2pwuEQVw"
-ID_PASTA_MESTRE = "1xhO35NUC2eKrtdAcJPCR4-csG2cDomjN"
+ID_PASTA_MESTRE = "187EtLCxURNnrn4_O9TXWJSxAJE-UlbeA"
 
 def conectar_google():
     escopos = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]

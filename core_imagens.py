@@ -1,3 +1,14 @@
+# ==============================================================================
+# NOME DO SCRIPT: core_imagens.py
+# DESCRICAO: Biblioteca principal de funcoes/classes core.
+# FUNCAO: 
+# STATUS: PENDENTE_REVISAO
+# MOTOR: Monge (003)
+# VERSAO: 1.0
+# DATA: 16/05/2026
+# AUTOR: Violino (000)
+# ==============================================================================
+
 from PIL import Image, ImageOps
 import io
 import os
