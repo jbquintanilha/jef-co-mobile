@@ -64,6 +64,7 @@ log = logging.getLogger(__name__)
 FAIXA_NUMERO_PT = 7 / 25.4 * 72   # 7mm ≈ 19.8pt
 FONTE_NUMERO = 8.5
 FONTE_SKU = 6.0
+COR = (0.0, 0.0, 0.0)
 COR_SKU = (0.30, 0.30, 0.30)
 
 
@@ -293,125 +294,87 @@ def gerar(*, com_cartao: bool = False,
 
     fora = sum(1 for _, num in arquivos if num not in ordem)
 
-    # 4. Remonta na ordem certa, anotando onde comeca cada PEDIDO
+    # 4. Remonta na ordem certa em um novo documento limpo (doc_final)
     destino = Path(saida) if saida else Path(baixado["pdf"])
-    doc = fitz.open()
-    primeira_pagina: list[int] = []
+    doc_final = fitz.open()
+    nomes_corrigidos = 0
 
-    for caminho, _ in arquivos:
+    # 5. Nome civil ao lado do apelido
+    mapa_pedido_civil = {}
+    if nome_real:
+        try:
+            import core_etiqueta_nome_real as cnr
+            ids_tt = [str(o) for o in mapa_tt.values()]
+            mapa_pedido_civil = cnr.mapa_por_pedido_tiktok(ids_tt) or {}
+        except Exception as exc:
+            log.warning("Mapa de nomes civis indisponivel: %s", exc)
+
+    for ordem_idx, (caminho, numero_pedido) in enumerate(arquivos, start=1):
         if not Path(caminho).exists():
             continue
         try:
             parcial = fitz.open(caminho)
-            if parcial.page_count > 0:
-                primeira_pagina.append(doc.page_count)   # onde este pedido comeca
-                doc.insert_pdf(parcial)
+            for pno in range(parcial.page_count):
+                pag_orig = parcial[pno]
+                largura, altura = pag_orig.rect.width, pag_orig.rect.height
+
+                # So' a PRIMEIRA pagina de cada pedido recebe a faixa inferior e o carimbo
+                if pno == 0 and numerar:
+                    nova_pag = doc_final.new_page(width=largura, height=altura)
+                    area_util = fitz.Rect(0, 0, largura, altura - FAIXA_NUMERO_PT)
+                    nova_pag.show_pdf_page(area_util, parcial, pno)
+
+                    # Nome civil se aplicavel (TikTok)
+                    par_nome = mapa_pedido_civil.get(str(numero_pedido))
+                    if par_nome:
+                        try:
+                            impresso, civil = par_nome
+                            achados = nova_pag.search_for(impresso)
+                            if achados:
+                                caixa = achados[0]
+                                texto = cnr.encurtar_para_caber(civil, caixa.x1, nova_pag.rect.width, "hebo", 8.3)
+                                if texto:
+                                    nova_pag.insert_text(fitz.Point(caixa.x1, caixa.y1), texto, fontsize=8.3, fontname="hebo", color=(0, 0, 0), overlay=True)
+                                    nomes_corrigidos += 1
+                        except Exception:
+                            pass
+
+                    # Carimbo #N  #m (Posição na Esteira + Número Sequencial Olist)
+                    num_olist = mapa_olist.get(str(numero_pedido))
+                    texto_num = f"#{ordem_idx}  #{num_olist}" if num_olist else f"#{ordem_idx}"
+                    texto_sku = mapa_skus.get(str(numero_pedido), "")
+
+                    largura_num = fitz.get_text_length(texto_num, fontname="helv", fontsize=FONTE_NUMERO)
+                    x_num = max(10, (largura - largura_num) / 2)
+                    y_num = altura - FAIXA_NUMERO_PT + 9.5
+                    nova_pag.insert_text(fitz.Point(x_num, y_num), texto_num, fontsize=FONTE_NUMERO, fontname="hebo", color=COR)
+
+                    if texto_sku:
+                        largura_sku = fitz.get_text_length(texto_sku, fontname="helv", fontsize=FONTE_SKU)
+                        x_sku = max(8, (largura - largura_sku) / 2)
+                        y_sku = altura - 3.0
+                        nova_pag.insert_text(fitz.Point(x_sku, y_sku), texto_sku, fontsize=FONTE_SKU, fontname="helv", color=COR_SKU)
+                else:
+                    # Demais páginas (ex: cartão de agradecimento) entram sem faixa
+                    doc_final.insert_pdf(parcial, from_page=pno, to_page=pno)
             parcial.close()
         except Exception as exc:
-            log.warning("Falha ao abrir PDF individual %s: %s", caminho, exc)
+            log.warning("Falha ao processar arquivo %s: %s", caminho, exc)
 
-    if doc.page_count == 0:
-        doc.close()
+    if doc_final.page_count == 0:
+        doc_final.close()
         return {
             "pdf": None,
             "total": 0,
             "fora_da_esteira": 0,
             "por_canal": baixado.get("por_canal") or {},
-            "erros": ["Nenhuma página válida encontrada nas etiquetas para gerar o PDF."],
+            "erros": ["Nenhuma página gerada nas etiquetas."],
             "segundos": round(time.time() - inicio, 1),
-            "resumo": "Nenhuma página de etiqueta disponível",
+            "resumo": "Nenhuma página disponível",
         }
 
-    # 5. Nome civil ao lado do apelido, ANTES de numerar.
-    #
-    # A ordem importa: `completar_nomes` usa `search_for` para achar o nome na
-    # pagina. Rodando depois do carimbo o "#N" ja' estaria la', sem prejuizo
-    # direto — mas gravar o PDF duas vezes dobra o tempo a toa.
-    #
-    # ⚠️ CORRIGIDO 25/08 (achado real, Jota): a versao antiga testava CADA
-    # pagina contra o mapa INTEIRO (`for pagina: for impresso, civil in
-    # mapa.items()`) — cruzamento por TEXTO/semelhanca. Nick curto de 1
-    # pedido ("jo") casava via `search_for` (substring, nao palavra inteira)
-    # dentro do texto de paginas de OUTROS pedidos — "Jocinete Neri De Lima"
-    # (civil de "jo") vazou pra 4 outras etiquetas so' porque "jo" aparecia
-    # em algum canto do texto delas.
-    #
-    # Correcao real: o cruzamento agora e' por DADO CONHECIDO, o
-    # `numero_pedido` de `arquivos[i]` — ja' sabemos com certeza de quem e'
-    # cada pagina, porque fomos NOS quem montou `arquivos`/`primeira_pagina`
-    # nessa ordem (secao 4, acima). Nao ha' "achar nome parecido": o
-    # `mapa_pedido.get(numero_pedido)` decide QUAL par usar antes de tocar a
-    # pagina; o `search_for(impresso)` abaixo so' acha a POSICAO x/y do nick
-    # original DENTRO da pagina certa — nunca decide se aplica ou nao.
-    nomes_corrigidos = 0
-    if nome_real:
-        try:
-            import core_etiqueta_nome_real as cnr
-
-            # Direto da API do TikTok (`cpf_name`), NAO do Olist — mesma
-            # informacao, mas uma chamada em lote em vez de uma por pedido.
-            # Media medida em 19/08: 4,9s para 5 pedidos, contra ~200s pelo
-            # Olist (o gargalo dominava o tempo total da geracao).
-            ids_tt = [str(o) for o in mapa_tt.values()]
-            mapa_pedido = cnr.mapa_por_pedido_tiktok(ids_tt)
-            if mapa_pedido:
-                # `arquivos[i]` e `primeira_pagina[i]` andam pareados (mesmo
-                # loop na secao 4) — reusa o INDICE, nao busca por nome.
-                for i, (_caminho, numero_pedido) in enumerate(arquivos):
-                    par = mapa_pedido.get(str(numero_pedido))
-                    if not par:
-                        continue
-                    impresso, civil = par
-                    pagina = doc[primeira_pagina[i]]
-
-                    # Restringe a busca ao PROPRIO pedido: mesmo com o par
-                    # certo, so' escreve se o nick aparecer NESTA pagina
-                    # especificamente — nunca aplica em pagina alheia.
-                    achados = pagina.search_for(impresso)
-                    if not achados:
-                        continue
-                    caixa = achados[0]
-                    texto = cnr.encurtar_para_caber(
-                        civil, caixa.x1, pagina.rect.width, "hebo", 8.3)
-                    if texto is None:
-                        continue
-                    pagina.insert_text(fitz.Point(caixa.x1, caixa.y1),
-                                       texto, fontsize=8.3,
-                                       fontname="hebo", color=(0, 0, 0),
-                                       overlay=True)
-                    nomes_corrigidos += 1
-        except Exception as exc:
-            # Nome e' melhoria; nunca pode impedir a etiqueta de sair
-            log.warning("Nome civil nao aplicado: %s", exc)
-
-    # 6. Numera so' a pagina de abertura de cada pedido
-    #
-    # ⚠️ "#N #m" desde 26/08 (pedido do Jota): #N e' a posicao na pilha
-    # (igual sempre foi, casa com a etiqueta 40x25); #m e' o numero
-    # SEQUENCIAL da Olist (ex: #546) — confere direto contra o pedido de
-    # venda/NF sem trocar de tela. `mapa_olist` vem de
-    # `_sequencia_e_mapa_olist()`; pedido sem match (fora da esteira, ou
-    # sequencia indisponivel) carimba so' o #N, nunca quebra a numeracao.
-    #
-    # ⚠️ FAIXA PROPRIA em vez de sobrepor (mudanca 26/08, achado real: o
-    # `overlay=True` colocava o "#20" colado no codigo de barras da etiqueta
-    # do TikTok — legivel, mas arriscado). Agora a pagina de abertura de
-    # cada pedido e' RECOMPOSTA: a etiqueta original encolhe e sobe pro
-    # topo, abrindo uma faixa vazia de 12mm no rodape, dedicada so' aos
-    # numeros — nunca mais sobre conteudo real. So' a 1a pagina de cada
-    # pedido (a que leva o carimbo) passa por isto; cartao e demais paginas
-    # ficam intocados.
-    if numerar:
-        for ordem_pedido, idx in enumerate(primeira_pagina, start=1):
-            numero_ecommerce = arquivos[ordem_pedido - 1][1]
-            num_olist = mapa_olist.get(str(numero_ecommerce))
-            texto_num = f"#{ordem_pedido}  #{num_olist}" if num_olist else f"#{ordem_pedido}"
-            texto_sku = mapa_skus.get(str(numero_ecommerce), "")
-            _recompor_com_faixa_numero(doc, idx, texto_num, texto_sku)
-
-
-    doc.save(destino)
-    doc.close()
+    doc_final.save(destino)
+    doc_final.close()
 
     # 7. Limpa os PDFs por canal que o `baixar_tudo` deixou na pasta.
     # Sem isto cada clique enche o Downloads com 4-6 arquivos e o operador
