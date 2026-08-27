@@ -7,6 +7,7 @@ google-auth
 google-api-python-client
 google-genai>=0.2.0
 python-dotenv
+requests
 fastapi
 uvicorn
 playwright
@@ -19,5 +20,7 @@ numpy
 PyMuPDF
 reportlab
 fpdf2
+pypdf
+PyPDF2
 zxing-cpp
 pyzbar
