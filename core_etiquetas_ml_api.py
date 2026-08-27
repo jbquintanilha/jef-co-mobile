@@ -75,6 +75,7 @@ def _get_pasta_saida() -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+log = logging.getLogger(__name__)
 PASTA_SAIDA = _get_pasta_saida()
 
 # Quantos shipments por chamada. O endpoint aceita lista, mas URL longa

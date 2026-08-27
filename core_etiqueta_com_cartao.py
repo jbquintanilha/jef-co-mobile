@@ -53,15 +53,20 @@ log = logging.getLogger("core_etiqueta_com_cartao")
 # Playwright e levam segundos por chamada; o conteudo do cartao e' fixo por
 # canal (cupom nao muda por pedido), entao regerar e' desperdicio.
 # Se o cartao mudar, basta regerar o PDF uma vez -- este modulo nao muda.
-_BASE_CARTOES = Path(
-    r"I:\Meu Drive\000 - ERP E-commerce Moda Íntima  Gestão de Estoque e Finanças"
-    r" (File responses)\6 - Pós-Venda"
-)
+def _get_cartao(canal: str) -> Path:
+    local = Path(__file__).parent / "cartoes" / f"cartao_agradecimento_{canal}_10x15.pdf"
+    if local.is_file():
+        return local
+    drive = Path(
+        r"I:\Meu Drive\000 - ERP E-commerce Moda Íntima  Gestão de Estoque e Finanças"
+        r" (File responses)\6 - Pós-Venda"
+    ) / f"cartao_agradecimento_{canal}_10x15.pdf"
+    return drive if drive.is_file() else local
 
 CARTOES = {
-    "shopee": _BASE_CARTOES / "cartao_agradecimento_shopee_10x15.pdf",
-    "ml": _BASE_CARTOES / "cartao_agradecimento_ml_10x15.pdf",
-    "tiktok": _BASE_CARTOES / "cartao_agradecimento_tiktok_10x15.pdf",
+    "shopee": _get_cartao("shopee"),
+    "ml": _get_cartao("ml"),
+    "tiktok": _get_cartao("tiktok"),
 }
 
 # Rastreios: Correios (TikTok/ML) e Shopee.
