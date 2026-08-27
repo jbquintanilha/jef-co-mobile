@@ -572,6 +572,9 @@ if fase(0):
                         st.success(f"✅ {r_tudo['resumo']}")
                     else:
                         st.warning("Nenhuma etiqueta disponível nos três canais.")
+                        for c_nome, c_info in (r_tudo.get("por_canal") or {}).items():
+                            if isinstance(c_info, dict) and c_info.get("erro"):
+                                st.error(f"⚠️ **{c_nome.upper()}**: {c_info.get('erro')}")
 
                     # Envio ML `pending` nao imprime por API NENHUMA (nem ML nem
                     # Olist): so' pelo modal do Olist. Sem avisar aqui, o pedido
