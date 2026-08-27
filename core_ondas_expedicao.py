@@ -46,6 +46,7 @@ Uso:
 """
 
 from __future__ import annotations
+import core_env_loader
 
 import logging
 import os

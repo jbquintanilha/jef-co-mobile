@@ -29,6 +29,7 @@ Uso:
 """
 
 from __future__ import annotations
+import core_env_loader
 
 import re
 from collections import defaultdict

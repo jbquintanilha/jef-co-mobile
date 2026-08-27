@@ -1,3 +1,4 @@
+import core_env_loader
 # ==============================================================================
 # NOME DO SCRIPT: core_olist.py
 # DESCRICAO: Cliente universal da API V3 (OAuth2) do Olist/Tiny ERP. Centraliza

@@ -28,6 +28,7 @@ Pela linha de comando:
 """
 
 from __future__ import annotations
+import core_env_loader
 
 import hashlib
 import hmac
@@ -41,18 +42,20 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from dotenv import load_dotenv
+from core_env_loader import get_secret
 
 ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env", override=True)
+if (ROOT / ".env").exists():
+    load_dotenv(ROOT / ".env", override=False)
 
 log = logging.getLogger(__name__)
 
 BASE = "https://api.tiktok-shops.com"
-APP_KEY = os.getenv("TIKTOK_APP_KEY", "")
-APP_SECRET = os.getenv("TIKTOK_APP_SECRET", "")
-ACCESS_TOKEN = os.getenv("TIKTOK_ACCESS_TOKEN", "")
-SHOP_CIPHER = os.getenv("TIKTOK_SHOP_CIPHER", "")
+APP_KEY = get_secret("TIKTOK_APP_KEY", "")
+APP_SECRET = get_secret("TIKTOK_APP_SECRET", "")
+ACCESS_TOKEN = get_secret("TIKTOK_ACCESS_TOKEN", "")
+SHOP_CIPHER = get_secret("TIKTOK_SHOP_CIPHER", "")
+
 
 # Pasta de saida: Downloads com timestamp (padrao da casa para export final)
 PASTA_SAIDA = Path(os.path.expanduser("~")) / "Downloads"

@@ -1,3 +1,4 @@
+import core_env_loader
 # ==============================================================================
 # NOME DO SCRIPT: core_shopee.py
 # DESCRICAO: Cliente da API V2 da Shopee (loja J&F Co.). Auth/refresh, upload de
