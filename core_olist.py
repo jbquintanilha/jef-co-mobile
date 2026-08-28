@@ -1,4 +1,3 @@
-import core_env_loader
 # ==============================================================================
 # NOME DO SCRIPT: core_olist.py
 # DESCRICAO: Cliente universal da API V3 (OAuth2) do Olist/Tiny ERP. Centraliza
@@ -26,10 +25,13 @@ Pontos aprendidos (validados 2026-06-17):
   (ver baixar_etiqueta_olist) — depende da expedicao existir.
 """
 
+import logging
 import os
 import time
 import requests
 from dotenv import load_dotenv
+
+log = logging.getLogger("core_olist")
 
 ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(ENV_PATH)
@@ -93,7 +95,15 @@ def _sb_headers() -> dict:
 
 
 def _salvar_refresh_supabase(refresh_token: str) -> None:
-    """Persiste o refresh_token rotacionado no Supabase (tabela olist_tokens)."""
+    """Persiste o refresh_token rotacionado no Supabase (tabela olist_tokens).
+
+    ⚠️ O erro NAO pode ser silencioso. Ate' 28/08 este bloco engolia qualquer
+    falha, e a tabela `olist_tokens` simplesmente nao existia: todo POST
+    respondia 404 e ninguem via. Como o refresh do Olist e' rotativo e dura
+    ~24h, cada renovacao no PC gerava um token que a nuvem nunca recebia --
+    o app do celular ficava presoate um refresh velho e acusava "Token do
+    Olist expirou" na bancada, sem pista da causa.
+    """
     if not (SUPABASE_URL and SUPABASE_KEY):
         return
     import datetime as _d
@@ -102,11 +112,22 @@ def _salvar_refresh_supabase(refresh_token: str) -> None:
         "refresh_token": refresh_token,
         "updated_at": _d.datetime.now(_d.timezone.utc).isoformat(),
     }
+    cabecalho = _sb_headers()
+    # Sem isto o segundo POST bate na PK e devolve 409 -- so' a primeira
+    # gravacao funcionaria, e a rotacao pararia de propagar no dia seguinte.
+    cabecalho["Prefer"] = "resolution=merge-duplicates,return=minimal"
     try:
-        requests.post(f"{SUPABASE_URL}/rest/v1/olist_tokens",
-                      headers=_sb_headers(), json=payload, timeout=10)
-    except requests.RequestException:
-        pass
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/olist_tokens",
+                          headers=cabecalho, json=payload, timeout=10)
+        if r.status_code not in (200, 201, 204):
+            log.warning(
+                "Nao consegui publicar o refresh do Olist no Supabase "
+                "(HTTP %s): %s. O PC segue funcionando, mas a nuvem vai "
+                "continuar com o token antigo ate' isto ser resolvido.",
+                r.status_code, (r.text or "")[:180],
+            )
+    except requests.RequestException as e:
+        log.warning("Falha de rede ao publicar o refresh do Olist: %s", e)
 
 
 def _carregar_refresh_supabase() -> str | None:
@@ -117,10 +138,20 @@ def _carregar_refresh_supabase() -> str | None:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/olist_tokens?id=eq.olist&select=refresh_token",
             headers=_sb_headers(), timeout=10)
-        if r.status_code == 200 and r.json():
-            return r.json()[0].get("refresh_token")
-    except requests.RequestException:
-        pass
+        if r.status_code == 200:
+            dados = r.json()
+            if dados:
+                return dados[0].get("refresh_token")
+            # Tabela existe mas esta' vazia: o chamador cai no token do
+            # ambiente, que na nuvem costuma estar velho. Vale avisar.
+            log.info("olist_tokens vazia no Supabase — usando o refresh do ambiente.")
+        else:
+            log.warning(
+                "Nao consegui ler o refresh do Olist no Supabase (HTTP %s): %s",
+                r.status_code, (r.text or "")[:180],
+            )
+    except requests.RequestException as e:
+        log.warning("Falha de rede ao ler o refresh do Olist: %s", e)
     return None
 
 
