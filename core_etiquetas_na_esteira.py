@@ -48,7 +48,6 @@ Uso:
 """
 
 from __future__ import annotations
-import core_env_loader
 
 import logging
 import time
@@ -58,12 +57,18 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-# Faixa compacta no rodape pros numeros #N #m e SKU do produto vendido.
-# Tamanho reduzido (7mm) com fontes discretas no padrao do codigo da DANFE
-# para economizar espaco e nao cortar nenhuma margem/borda da etiqueta original.
-FAIXA_NUMERO_PT = 7 / 25.4 * 72   # 7mm ≈ 19.8pt
-FONTE_NUMERO = 8.5
-FONTE_SKU = 6.0
+# Faixa no rodape pros numeros #N #m e SKU do produto vendido.
+#
+# 27/08: fontes subiram de 8.5/6.0 para 12/10 -- o Comandante nao conseguia ler
+# na bancada ("dificil de ler hj"). O padrao discreto da DANFE serve pra quem
+# le' o documento na mao; aqui a leitura e' de pe', a um metro, com a caixa na
+# frente. Legibilidade vale mais que economia de papel.
+#
+# A faixa cresceu junto (7mm -> 10.5mm): 12pt + 10pt + respiro nao cabem em
+# 19.8pt, e forcar so' as fontes faria as duas linhas se sobreporem.
+FAIXA_NUMERO_PT = 10.5 / 25.4 * 72   # 10.5mm ≈ 29.8pt
+FONTE_NUMERO = 12.0
+FONTE_SKU = 10.0
 COR = (0.0, 0.0, 0.0)
 COR_SKU = (0.30, 0.30, 0.30)
 
@@ -100,17 +105,20 @@ def _recompor_com_faixa_numero(doc, idx: int, texto_num: str, texto_sku: str = "
     temp.close()
 
     # Linha 1: #N  #m (Ordem na esteira + Numero no Olist)
-    largura_num = fitz.get_text_length(texto_num, fontname="helv", fontsize=FONTE_NUMERO)
+    largura_num = fitz.get_text_length(texto_num, fontname="hebo", fontsize=FONTE_NUMERO)
     x_num = max(10, (largura - largura_num) / 2)
-    y_num = altura - FAIXA_NUMERO_PT + 9.5
+    # Baseline da 1a linha = topo da faixa + a altura da propria fonte. Antes
+    # era um 9.5 fixo, calibrado pra fonte 8.5; com 12pt o texto encostava na
+    # borda de cima. Derivar da fonte mantem o respiro em qualquer tamanho.
+    y_num = altura - FAIXA_NUMERO_PT + FONTE_NUMERO + 1.0
     nova.insert_text(fitz.Point(x_num, y_num), texto_num, fontsize=FONTE_NUMERO,
                      fontname="hebo", color=COR)
 
-    # Linha 2: SKU do produto vendido (tamanho compacto DANFE)
+    # Linha 2: SKU do produto vendido
     if texto_sku:
         largura_sku = fitz.get_text_length(texto_sku, fontname="helv", fontsize=FONTE_SKU)
         x_sku = max(8, (largura - largura_sku) / 2)
-        y_sku = altura - 3.0
+        y_sku = altura - 4.0
         nova.insert_text(fitz.Point(x_sku, y_sku), texto_sku, fontsize=FONTE_SKU,
                          fontname="helv", color=COR_SKU)
 
@@ -344,15 +352,15 @@ def gerar(*, com_cartao: bool = False,
                     texto_num = f"#{ordem_idx}  #{num_olist}" if num_olist else f"#{ordem_idx}"
                     texto_sku = mapa_skus.get(str(numero_pedido), "")
 
-                    largura_num = fitz.get_text_length(texto_num, fontname="helv", fontsize=FONTE_NUMERO)
+                    largura_num = fitz.get_text_length(texto_num, fontname="hebo", fontsize=FONTE_NUMERO)
                     x_num = max(10, (largura - largura_num) / 2)
-                    y_num = altura - FAIXA_NUMERO_PT + 9.5
+                    y_num = altura - FAIXA_NUMERO_PT + FONTE_NUMERO + 1.0
                     nova_pag.insert_text(fitz.Point(x_num, y_num), texto_num, fontsize=FONTE_NUMERO, fontname="hebo", color=COR)
 
                     if texto_sku:
                         largura_sku = fitz.get_text_length(texto_sku, fontname="helv", fontsize=FONTE_SKU)
                         x_sku = max(8, (largura - largura_sku) / 2)
-                        y_sku = altura - 3.0
+                        y_sku = altura - 4.0
                         nova_pag.insert_text(fitz.Point(x_sku, y_sku), texto_sku, fontsize=FONTE_SKU, fontname="helv", color=COR_SKU)
                 else:
                     # Demais páginas (ex: cartão de agradecimento) entram sem faixa

@@ -37,11 +37,9 @@ _RAIZ = Path(__file__).resolve().parent.parent
 if str(_RAIZ) not in sys.path:
     sys.path.insert(0, str(_RAIZ))
 
-import core_env_loader
 import streamlit as st
 import pandas as pd
 import core_separacao as cs
-
 
 # separador_etiquetas vive em tools/ — sem isto o botao de imprimir quebra
 # com ModuleNotFoundError silencioso dentro do try/except.
@@ -349,16 +347,28 @@ def fase(indice: int) -> bool:
 
 
 def _widget_ondas(chave: str) -> tuple[list, list, list]:
-    """Painel de Ondas de Expedição — mostra o que já foi processado e deixa
-    marcar um range (por número da onda ou informando o último #Olist).
+    """Painel de Ondas de Expedição — seleciona a onda de trabalho e a trava.
 
-    Devolve (_todos, _pend, _feitos) — a Fase 3 usa `_pend`/`_dados_onda`
-    depois do painel, pra filtrar a pilha numerada só com o que falta.
+    Devolve (_alvo, _pend, _feitos):
+      * com onda travada -> `_alvo` sao os pedidos DAQUELA onda;
+      * sem trava        -> `_alvo` e' a fila livre (os ainda nao processados),
+                            exatamente como funcionava antes.
 
     Extraido pra funcao em 25/08 pra aparecer TAMBEM na Fase 1 (Jota: "era
     ideal a gente ter logo nesse comeco... eu poder ver a ultima etiqueta
     que ja consta no sistema"), alem da Fase 3 onde ja existia. `chave` (ex:
     "f1", "f3") evita colisao de `key=` entre as duas instancias do widget.
+
+    ## A virada de 27/08
+
+    Antes "onda" queria dizer "ja' processado" — um carimbo. Como as fases so'
+    liam os pendentes, pedido marcado sumia da fila e o Comandante so'
+    conseguia "travar de fazer as de n para n+frente". Agora a onda e' um LOTE
+    de trabalho: trava-se uma e a esteira inteira passa a operar so' sobre
+    ela, em qualquer ordem de fase (separar, reimprimir etiqueta, cartao...).
+
+    A trava ESCONDE o resto (decisao do Jota): meia-trava traria de volta a
+    confusao de nao saber em que conjunto se esta' mexendo.
     """
     _dados_onda = st.session_state.get("dados_separacao")
     if not _dados_onda:
@@ -381,7 +391,51 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
     _pend = [p for p in _todos if not p.get("onda")]
     _feitos = [p for p in _todos if p.get("onda")]
 
+    # ---------------- Seletor de onda (trava a esteira) ---------------- #
+    _lista = ondas.listar_ondas()
+    _opcoes = [None] + [o["onda"] for o in _lista]
+    _por_num = {o["onda"]: o for o in _lista}
+
+    def _rotulo(n):
+        if n is None:
+            return f"🔓 Fila livre — {len(_pend)} pendente(s)"
+        o = _por_num.get(n, {})
+        marca = "✅" if o.get("concluida") else "🔵"
+        return (f"{marca} Onda {n} · {o.get('pedidos', 0)} pedidos · "
+                f"{o.get('total_fases', 0)}/7 fases")
+
     st.markdown("#### 🌊 Ondas de expedição")
+
+    _travada = st.selectbox(
+        "Onda de trabalho", options=_opcoes, format_func=_rotulo,
+        key="onda_travada",
+        help="Ao escolher uma onda, TODAS as fases passam a trabalhar só "
+             "com os pedidos dela. Escolha 'Fila livre' para voltar ao "
+             "fluxo normal.",
+    )
+
+    if _travada is not None:
+        _num_onda = ondas.pedidos_da_onda(_travada)
+        _alvo = [p for p in _todos if str(p.get("numero_ecommerce") or "").upper()
+                 in _num_onda]
+        _feitas = ondas.fases_da_onda(_travada)
+        _nomes_ok = [FASES[i] for i in sorted(_feitas) if _feitas[i]]
+        st.success(
+            f"🔒 **Onda {_travada} travada** — {len(_alvo)} pedido(s). "
+            "As 7 fases estão operando só sobre ela."
+            + (f"\n\nJá concluído: {' · '.join(_nomes_ok)}" if _nomes_ok else "")
+        )
+        # Marca a fase corrente como feita — e' o que permite retomar a onda
+        # depois sem perder de vista o que ja' passou.
+        _fase_ix = st.session_state.get("fase_atual", 0)
+        if st.button(f"✅ Marcar '{FASES[_fase_ix]}' como concluída",
+                     key=f"btn_fase_ok_{chave}", use_container_width=True):
+            ondas.marcar_fase(_travada, _fase_ix)
+            st.rerun()
+        st.divider()
+        return _alvo, _pend, _feitos
+
+    # ---------------- Fila livre (comportamento de sempre) ---------------- #
     c_o1, c_o2, c_o3 = st.columns([2, 1, 1])
     with c_o1:
         _res = ondas.resumo()
@@ -448,6 +502,37 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                     )
                     st.rerun()
 
+    # Montar onda escolhendo (em vez de levar tudo que esta' pendente).
+    # Pedido do Jota (27/08): "selecionando tudo, porem gere a possibilidade
+    # de escolher e filtros por plataforma".
+    if _pend:
+        with st.expander("🎯 Montar onda escolhendo os pedidos"):
+            _canais = sorted({str(p.get("canal") or "?") for p in _pend})
+            _fil = st.multiselect(
+                "Filtrar por plataforma", options=_canais, default=_canais,
+                key=f"filtro_canal_onda_{chave}")
+            _cand = [p for p in _pend if str(p.get("canal") or "?") in _fil]
+            st.caption(f"{len(_cand)} pedido(s) no filtro. "
+                       "Desmarque os que NÃO entram nesta onda.")
+
+            _escolhidos = []
+            for p in _cand:
+                n = str(p.get("numero_ecommerce") or "")
+                it = (p.get("itens") or [{}])[0]
+                rot = (f"#{p.get('numero_olist') or '?'} · {p.get('canal')} · "
+                       f"{it.get('quantidade', 1)}x {it.get('sku', '')}")
+                if st.checkbox(rot, value=True, key=f"sel_{chave}_{n}"):
+                    _escolhidos.append(n)
+
+            if st.button(f"💾 Criar onda {ondas.proxima_onda()} com "
+                         f"{len(_escolhidos)} pedido(s)",
+                         key=f"btn_onda_sel_{chave}", type="primary",
+                         disabled=not _escolhidos, use_container_width=True):
+                r_s = ondas.salvar_onda_selecionada(_todos, set(_escolhidos))
+                st.success(f"✅ Onda {r_s['onda']} criada — "
+                           f"{r_s['gravados']} pedido(s).")
+                st.rerun()
+
     if _feitos:
         with st.expander(f"✅ {len(_feitos)} pedido(s) já processados"):
             for p in sorted(_feitos, key=lambda x: (x.get("onda") or 0)):
@@ -458,7 +543,9 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                     f"{it.get('sku', '')}"
                 )
     st.divider()
-    return _todos, _pend, _feitos
+    # Sem onda travada o alvo e' a fila livre -- mesmo comportamento de antes,
+    # em que as fases consumiam os pendentes.
+    return _pend, _pend, _feitos
 
 
 # =========================== FASE 1 — ETIQUETAS ============================= #
@@ -572,9 +659,6 @@ if fase(0):
                         st.success(f"✅ {r_tudo['resumo']}")
                     else:
                         st.warning("Nenhuma etiqueta disponível nos três canais.")
-                        for c_nome, c_info in (r_tudo.get("por_canal") or {}).items():
-                            if isinstance(c_info, dict) and c_info.get("erro"):
-                                st.error(f"⚠️ **{c_nome.upper()}**: {c_info.get('erro')}")
 
                     # Envio ML `pending` nao imprime por API NENHUMA (nem ML nem
                     # Olist): so' pelo modal do Olist. Sem avisar aqui, o pedido
@@ -1104,8 +1188,9 @@ if fase(2):
     # continua mostrando tudo como pendente — quem imprime de novo gasta
     # etiqueta e se perde (Jota, 25/08: "as vezes fazemos outra onda").
     # Widget compartilhado com a Fase 1 -- ver `_widget_ondas()`.
+    # `_alvo` = os pedidos da onda travada; sem trava, a fila livre.
     _dados_onda = st.session_state.get("dados_separacao")
-    _todos, _pend, _feitos = _widget_ondas("f3")
+    _alvo, _pend, _feitos = _widget_ondas("f3")
 
     # ---- pilha unica, na ordem da bancada -------------------------------- #
     # Este e' o caminho principal: um PDF so' com os dois canais, REORDENADO
@@ -1123,11 +1208,16 @@ if fase(2):
         # corresponde a ninguém no endereço. O TikTok imprime o apelido do
         # comprador; aqui o nome civil (o mesmo do CPF da NF-e) é ACRESCENTADO
         # entre parênteses, sem apagar o que a plataforma emitiu.
-        # Escopo da pilha: por padrao so' o que falta processar (ondas).
+        # Escopo da pilha. Com onda travada o padrao e' a propria onda --
+        # reimprimir dentro dela e' livre (decisao do Jota, 27/08: "livre,
+        # geralmente é só gerar o pdf"), sem pedir confirmacao.
+        _onda_lock = st.session_state.get("onda_travada")
         _imprimir_tudo = st.checkbox(
             "📚 Imprimir TUDO", value=False, key="chk_onda_tudo",
-            help="Desmarcado: só os pedidos que ainda não entraram em uma "
-                 "onda. Marcado: a pilha inteira, inclusive os já feitos.")
+            help=("Desmarcado: só os pedidos da onda travada."
+                  if _onda_lock else
+                  "Desmarcado: só os pedidos que ainda não entraram em uma "
+                  "onda. Marcado: a pilha inteira, inclusive os já feitos."))
         nome_real_esteira = st.checkbox(
             "🪪 Nome civil", value=True, key="chk_nome_real",
             help='Apelido vira "Thata (Aurora Machado)". '
@@ -1141,7 +1231,9 @@ if fase(2):
                 import core_etiquetas_na_esteira as cne
                 _so = None
                 if _dados_onda and not _imprimir_tudo:
-                    _so = {str(p.get("numero_ecommerce") or "") for p in _pend}
+                    # `_alvo` ja' respeita a onda travada; sem trava ele e' a
+                    # fila livre, igual ao comportamento anterior.
+                    _so = {str(p.get("numero_ecommerce") or "") for p in _alvo}
 
                 prog_bar.progress(35, text="⏳ [2/4] Normalizando formato térmico 10x15 e intercalando cartões... (35%)")
 

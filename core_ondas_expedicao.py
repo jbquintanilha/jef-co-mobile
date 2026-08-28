@@ -46,7 +46,6 @@ Uso:
 """
 
 from __future__ import annotations
-import core_env_loader
 
 import logging
 import os
@@ -72,6 +71,20 @@ CREATE TABLE IF NOT EXISTS ondas (
 );
 CREATE INDEX IF NOT EXISTS idx_ondas_onda ON ondas(onda);
 CREATE INDEX IF NOT EXISTS idx_ondas_dia  ON ondas(dia);
+
+-- Quais fases da esteira ja' foram feitas em cada onda.
+--
+-- Sem isto a onda so' sabia dizer "processada", e voltar pra reimprimir uma
+-- etiqueta perdia o rastro. Com o registro por fase a onda vira um lote que
+-- percorre as 7 fases e pode ser retomada em qualquer ponto.
+CREATE TABLE IF NOT EXISTS ondas_fases (
+    onda       INTEGER NOT NULL,
+    dia        TEXT    NOT NULL,
+    fase       INTEGER NOT NULL,   -- 0..6, indice de FASES na pagina
+    concluida  INTEGER DEFAULT 0,
+    quando     TEXT,
+    PRIMARY KEY (onda, dia, fase)
+);
 """
 
 
@@ -209,6 +222,102 @@ def salvar_ate_pedido(pedidos: list[dict[str, Any]],
     return r
 
 
+def listar_ondas(dia: str | None = None) -> list[dict[str, Any]]:
+    """Ondas do dia com contagem, status e progresso de fases.
+
+    E' o que alimenta o seletor "qual onda vou trabalhar" no topo da esteira.
+    """
+    init_db()
+    d = dia or datetime.now().strftime("%Y-%m-%d")
+    try:
+        with _conn() as c:
+            linhas = [dict(r) for r in c.execute(
+                "SELECT onda, COUNT(*) AS pedidos, MIN(criado_em) AS quando "
+                "FROM ondas WHERE dia = ? GROUP BY onda ORDER BY onda", (d,))]
+            feitas = {}
+            for r in c.execute("SELECT onda, fase FROM ondas_fases "
+                               "WHERE dia = ? AND concluida = 1", (d,)):
+                feitas.setdefault(r["onda"], set()).add(r["fase"])
+    except sqlite3.Error as e:
+        log.error("Erro ao listar ondas: %s", e)
+        return []
+
+    for l in linhas:
+        f = feitas.get(l["onda"], set())
+        l["fases_feitas"] = sorted(f)
+        l["total_fases"] = len(f)
+        l["concluida"] = len(f) >= 7
+    return linhas
+
+
+def pedidos_da_onda(numero: int, dia: str | None = None) -> set[str]:
+    """Os `numero_ecommerce` de uma onda — o filtro que as fases aplicam."""
+    init_db()
+    d = dia or datetime.now().strftime("%Y-%m-%d")
+    try:
+        with _conn() as c:
+            return {r["numero_ecommerce"] for r in c.execute(
+                "SELECT numero_ecommerce FROM ondas WHERE onda = ? AND dia = ?",
+                (int(numero), d))}
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        log.error("Erro ao ler pedidos da onda %s: %s", numero, e)
+        return set()
+
+
+def marcar_fase(onda: int, fase: int, feita: bool = True,
+                dia: str | None = None) -> None:
+    """Registra que uma fase da onda foi concluida (ou desfaz)."""
+    init_db()
+    d = dia or datetime.now().strftime("%Y-%m-%d")
+    try:
+        with _conn() as c:
+            c.execute(
+                "INSERT INTO ondas_fases (onda, dia, fase, concluida, quando) "
+                "VALUES (?, ?, ?, ?, datetime('now','localtime')) "
+                "ON CONFLICT(onda, dia, fase) DO UPDATE SET "
+                "  concluida = excluded.concluida, quando = excluded.quando",
+                (int(onda), d, int(fase), 1 if feita else 0),
+            )
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        log.error("Erro ao marcar fase %s da onda %s: %s", fase, onda, e)
+
+
+def fases_da_onda(onda: int, dia: str | None = None) -> dict[int, bool]:
+    """{fase: concluida} da onda."""
+    init_db()
+    d = dia or datetime.now().strftime("%Y-%m-%d")
+    try:
+        with _conn() as c:
+            return {r["fase"]: bool(r["concluida"]) for r in c.execute(
+                "SELECT fase, concluida FROM ondas_fases WHERE onda = ? AND dia = ?",
+                (int(onda), d))}
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        log.error("Erro ao ler fases da onda %s: %s", onda, e)
+        return {}
+
+
+def salvar_onda_selecionada(pedidos: list[dict[str, Any]],
+                            numeros: set[str] | list[str]) -> dict[str, Any]:
+    """Fecha uma onda so' com os pedidos escolhidos.
+
+    ⚠️ Seleciona por `numero_ecommerce`, NUNCA por faixa de numero sequencial.
+    Decisao do Comandante (27/08):
+
+        "sequencia numérica não é sinal de verdade, precisa ver o status de
+         processamento individual... pode ocorrer o fato de um pedido de numero
+         baixo q o cliente demorou a pagar, ele entra na fila depois com numero
+         já processado, porem ele não foi processado."
+
+    Ou seja: #520 pode chegar na bancada DEPOIS do #545 se o pagamento demorou.
+    Marcar "tudo ate' #545" varreria o #520 junto sem ele ter sido tocado. Por
+    isso a onda guarda a lista explicita de pedidos, e `salvar_ate_pedido` fica
+    reservado ao resgate de pilha impressa fora do sistema.
+    """
+    alvo_num = {str(n).strip().upper() for n in numeros if str(n).strip()}
+    alvo = [p for p in pedidos if _num(p) in alvo_num]
+    return salvar_onda(alvo)
+
+
 def desfazer_ultima() -> dict[str, Any]:
     """Apaga a ultima onda do dia — para quando o operador salvou por engano."""
     init_db()
@@ -222,6 +331,10 @@ def desfazer_ultima() -> dict[str, Any]:
                 return {"onda": None, "removidos": 0}
             n = c.execute("DELETE FROM ondas WHERE dia = ? AND onda = ?",
                           (hoje, ultima)).rowcount
+            # Sem isto o progresso de fases ficaria orfao e seria herdado pela
+            # proxima onda de mesmo numero, que nasceria "meio pronta".
+            c.execute("DELETE FROM ondas_fases WHERE dia = ? AND onda = ?",
+                      (hoje, ultima))
         log.info("Onda %s desfeita: %d pedido(s) voltaram", ultima, n)
         return {"onda": ultima, "removidos": n}
     except sqlite3.Error as e:
