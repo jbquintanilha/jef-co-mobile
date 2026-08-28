@@ -2093,6 +2093,80 @@ else:
             if e["detalhe"]:
                 st.code(e["detalhe"], language=None)
 
-    if st.button("🧹 Limpar lista de erros", key="btn_limpar_erros"):
-        limpar_erros()
-        st.rerun()
+    c_err1, c_err2 = st.columns([1, 1])
+    with c_err1:
+        if st.button("🧹 Limpar lista de erros", key="btn_limpar_erros", use_container_width=True):
+            limpar_erros()
+            st.rerun()
+    with c_err2:
+        if st.button("📸 Gravar Snapshot dos Erros Atuais", key="btn_snap_erros_auto", use_container_width=True, type="secondary"):
+            try:
+                import core_log_manutencao as clm
+                msg_auto = f"Registro automático: {len(_graves)} erro(s) grave(s), total {len(_erros)} erro(s) na sessão."
+                snap = clm.capturar_snapshot(st.session_state, msg_auto, "🔴 Erro / Bug Operacional")
+                if clm.salvar_log(snap):
+                    st.success("✅ **Snapshot dos erros capturado e gravado com sucesso!**")
+            except Exception as e_snap:
+                st.error(f"Falha ao gravar snapshot: {e_snap}")
+
+# ---------------------------------------------------------------------------- #
+# 📝 ANOTAÇÕES E SNAPSHOT DE MANUTENÇÃO (PARA VIOLINO / CLAUDE)
+# ---------------------------------------------------------------------------- #
+st.divider()
+st.subheader("📝 Anotar Erros e Melhorias para Próxima Manutenção")
+st.caption(
+    "Registre observações, falhas ou sugestões. Ao salvar, o sistema **raspa e "
+    "grava o snapshot completo da tela** (fila, erros, sync e estado da esteira) "
+    "para que a IA (Violino / Claude) possa analisar e agir na manutenção."
+)
+
+with st.container(border=True):
+    c_m1, c_m2 = st.columns([1, 3])
+    with c_m1:
+        tipo_log = st.selectbox(
+            "Tipo de Registro:",
+            ["🔴 Erro / Bug Operacional", "💡 Melhoria / Sugestão", "🔑 Alerta de Token / API", "📌 Nota Geral"],
+            key="sel_tipo_manutencao",
+        )
+    with c_m2:
+        nota_txt = st.text_area(
+            "Descreva o ocorrido ou a melhoria desejada:",
+            placeholder="Ex: Olist deu token expirado na Fase 1; ou: Ajustar ordenação da lista...",
+            key="txt_nota_manutencao",
+            height=85,
+        )
+
+    c_b1, c_b2 = st.columns([2, 1])
+    with c_b1:
+        if st.button("📸 Salvar Anotação + Snapshot Completo da Tela", key="btn_salvar_snapshot_manut", type="primary", use_container_width=True):
+            if not nota_txt.strip():
+                st.warning("⚠️ Por favor, escreva uma breve descrição antes de salvar.")
+            else:
+                try:
+                    import core_log_manutencao as clm
+                    snap = clm.capturar_snapshot(st.session_state, nota_txt, tipo_log)
+                    if clm.salvar_log(snap):
+                        st.success("✅ **Anotação e Snapshot gravados com sucesso!** O Violino e o Claude terão acesso a todo o contexto da tela na próxima manutenção.")
+                    else:
+                        st.error("❌ Falha ao gravar snapshot no banco local.")
+                except Exception as e_snap:
+                    st.error(f"❌ Erro ao capturar snapshot: {e_snap}")
+
+    with c_b2:
+        ver_historico = st.toggle("📂 Ver Histórico de Logs", key="tgl_ver_logs_manut")
+
+    if ver_historico:
+        try:
+            import core_log_manutencao as clm
+            logs_gravados = clm.listar_logs(limite=10)
+            if not logs_gravados:
+                st.info("Nenhum log gravado ainda.")
+            else:
+                for lg in logs_gravados:
+                    with st.expander(f"{lg['data_hora']} · {lg['tipo']} · {lg['nota_usuario'][:50]}..."):
+                        st.write(f"**Nota:** {lg['nota_usuario']}")
+                        st.write(f"**Fase:** {lg['fase_atual']} | **Onda:** {lg['onda_travada']} | **Erros na Tela:** {lg['total_erros']}")
+                        st.json(lg.get("snapshot", {}))
+        except Exception as e_hist:
+            st.caption(f"Não foi possível carregar histórico: {e_hist}")
+
