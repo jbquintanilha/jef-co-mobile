@@ -393,30 +393,44 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
     confusao de nao saber em que conjunto se esta' mexendo.
     """
     _dados_onda = st.session_state.get("dados_separacao")
-    if not _dados_onda:
+    if not _dados_onda or not isinstance(_dados_onda, dict):
         st.caption(
             "🌊 Sincronize a fila (botão abaixo) para ver as ondas já "
             "processadas e marcar até onde você já imprimiu."
         )
         return [], [], []
 
-    import core_ondas_expedicao as ondas
+    try:
+        import core_ondas_expedicao as ondas
+    except Exception as err:
+        st.warning(f"Aviso ao carregar módulo de ondas: {err}")
+        return [], [], []
 
-    _todos = (_dados_onda["pedidos_simples_1un"]
-              + _dados_onda["pedidos_simples_multi_un"]
-              + _dados_onda["pedidos_multi_itens"])
+    _todos = (
+        _dados_onda.get("pedidos_simples_1un", [])
+        + _dados_onda.get("pedidos_simples_multi_un", [])
+        + _dados_onda.get("pedidos_multi_itens", [])
+    )
     # A marca vale ate' o pedido sair do Olist: quem nao esta' mais na
     # fila pendente e' descartado do banco de ondas.
-    ondas.limpar_ausentes({str(p.get("numero_ecommerce") or "").upper()
-                           for p in _todos})
-    ondas.marcar(_todos)
+    try:
+        ondas.limpar_ausentes({str(p.get("numero_ecommerce") or "").upper()
+                               for p in _todos})
+        ondas.marcar(_todos)
+    except Exception:
+        pass
+
     _pend = [p for p in _todos if not p.get("onda")]
     _feitos = [p for p in _todos if p.get("onda")]
 
     # ---------------- Seletor de onda (trava a esteira) ---------------- #
-    _lista = ondas.listar_ondas()
-    _opcoes = [None] + [o["onda"] for o in _lista]
-    _por_num = {o["onda"]: o for o in _lista}
+    try:
+        _lista = ondas.listar_ondas() if hasattr(ondas, "listar_ondas") else []
+    except Exception:
+        _lista = []
+
+    _opcoes = [None] + [o.get("onda") for o in _lista if isinstance(o, dict) and "onda" in o]
+    _por_num = {o["onda"]: o for o in _lista if isinstance(o, dict) and "onda" in o}
 
     def _rotulo(n):
         if n is None:
@@ -430,17 +444,24 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
 
     _travada = st.selectbox(
         "Onda de trabalho", options=_opcoes, format_func=_rotulo,
-        key="onda_travada",
+        key=f"onda_travada_{chave}",
         help="Ao escolher uma onda, TODAS as fases passam a trabalhar só "
              "com os pedidos dela. Escolha 'Fila livre' para voltar ao "
              "fluxo normal.",
     )
+    st.session_state["onda_travada"] = _travada
 
     if _travada is not None:
-        _num_onda = ondas.pedidos_da_onda(_travada)
+        try:
+            _num_onda = ondas.pedidos_da_onda(_travada)
+        except Exception:
+            _num_onda = set()
         _alvo = [p for p in _todos if str(p.get("numero_ecommerce") or "").upper()
                  in _num_onda]
-        _feitas = ondas.fases_da_onda(_travada)
+        try:
+            _feitas = ondas.fases_da_onda(_travada)
+        except Exception:
+            _feitas = {}
         _nomes_ok = [FASES[i] for i in sorted(_feitas) if _feitas[i]]
         st.success(
             f"🔒 **Onda {_travada} travada** — {len(_alvo)} pedido(s). "
