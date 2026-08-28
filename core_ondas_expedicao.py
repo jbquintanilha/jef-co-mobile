@@ -318,6 +318,38 @@ def salvar_onda_selecionada(pedidos: list[dict[str, Any]],
     return salvar_onda(alvo)
 
 
+def concluir(onda: int, dia: str | None = None) -> dict[str, Any]:
+    """Marca todas as 7 fases da onda como feitas — fecha o lote de uma vez."""
+    for f in range(7):
+        marcar_fase(onda, f, True, dia)
+    return {"onda": int(onda), "fases": 7}
+
+
+def reabrir(onda: int, fase: int | None = None,
+            dia: str | None = None) -> dict[str, Any]:
+    """Reabre a onda inteira, ou so' uma fase dela.
+
+    Serve pra quando a onda foi dada como pronta e ainda falta alguma coisa —
+    o lote continua existindo, so' volta a aparecer como pendente naquela fase.
+    Os PEDIDOS nunca sao mexidos aqui: quem desfaz vinculo e' `desfazer_ultima`.
+    """
+    init_db()
+    d = dia or datetime.now().strftime("%Y-%m-%d")
+    try:
+        with _conn() as c:
+            if fase is None:
+                n = c.execute("DELETE FROM ondas_fases WHERE onda = ? AND dia = ?",
+                              (int(onda), d)).rowcount
+            else:
+                n = c.execute("DELETE FROM ondas_fases "
+                              "WHERE onda = ? AND dia = ? AND fase = ?",
+                              (int(onda), d, int(fase))).rowcount
+        return {"onda": int(onda), "fases_reabertas": n}
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        log.error("Erro ao reabrir a onda %s: %s", onda, e)
+        return {"onda": onda, "fases_reabertas": 0, "erro": str(e)}
+
+
 def desfazer_ultima() -> dict[str, Any]:
     """Apaga a ultima onda do dia — para quando o operador salvou por engano."""
     init_db()

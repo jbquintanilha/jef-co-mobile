@@ -346,6 +346,28 @@ def fase(indice: int) -> bool:
     return st.session_state.fase_atual == indice
 
 
+def _filtro_onda() -> set[str] | None:
+    """Os `numero_ecommerce` da onda travada, ou None quando nao ha' trava.
+
+    Existe para as fases que leem `dados_separacao` direto (separacao,
+    embalagem) respeitarem a onda sem repetir a consulta ao banco. `None`
+    significa "sem trava" -- o chamador mostra tudo, como sempre fez.
+    """
+    n = st.session_state.get("onda_travada")
+    if n is None:
+        return None
+    import core_ondas_expedicao as ondas
+    return ondas.pedidos_da_onda(n)
+
+
+def _so_da_onda(pedidos: list, filtro: set[str] | None) -> list:
+    """Recorta uma lista de pedidos pela onda travada (ou devolve inteira)."""
+    if not filtro:
+        return pedidos
+    return [p for p in pedidos
+            if str(p.get("numero_ecommerce") or "").upper() in filtro]
+
+
 def _widget_ondas(chave: str) -> tuple[list, list, list]:
     """Painel de Ondas de Expedição — seleciona a onda de trabalho e a trava.
 
@@ -428,10 +450,30 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
         # Marca a fase corrente como feita — e' o que permite retomar a onda
         # depois sem perder de vista o que ja' passou.
         _fase_ix = st.session_state.get("fase_atual", 0)
-        if st.button(f"✅ Marcar '{FASES[_fase_ix]}' como concluída",
-                     key=f"btn_fase_ok_{chave}", use_container_width=True):
-            ondas.marcar_fase(_travada, _fase_ix)
-            st.rerun()
+        _ja_feita = bool(_feitas.get(_fase_ix))
+        c_f1, c_f2, c_f3 = st.columns(3)
+        with c_f1:
+            if st.button(
+                    ("↩️ Desmarcar esta fase" if _ja_feita
+                     else f"✅ Concluir '{FASES[_fase_ix].split(' ', 1)[-1]}'"),
+                    key=f"btn_fase_ok_{chave}", use_container_width=True,
+                    type="secondary" if _ja_feita else "primary"):
+                ondas.marcar_fase(_travada, _fase_ix, not _ja_feita)
+                st.rerun()
+        with c_f2:
+            if st.button("🏁 Concluir onda inteira", key=f"btn_onda_fim_{chave}",
+                         use_container_width=True,
+                         help="Marca as 7 fases de uma vez."):
+                ondas.concluir(_travada)
+                st.rerun()
+        with c_f3:
+            if st.button("🔄 Reabrir onda", key=f"btn_onda_reabrir_{chave}",
+                         use_container_width=True,
+                         help="Zera o progresso das fases. Os pedidos "
+                              "continuam na onda.",
+                         disabled=not _nomes_ok):
+                ondas.reabrir(_travada)
+                st.rerun()
         st.divider()
         return _alvo, _pend, _feitos
 
@@ -1154,11 +1196,21 @@ if fase(1):
                 use_container_width=True, hide_index=True,
             )
 
+        # Com onda travada, o mapa mostra so' os pedidos dela -- senao a
+        # bancada confere contra uma lista maior do que a caixa que tem na
+        # frente.
+        _f_onda = _filtro_onda()
+        _simples_onda = _so_da_onda(dados["pedidos_simples_1un"], _f_onda)
+        _multi_onda = _so_da_onda(dados["pedidos_multi_itens"], _f_onda)
+        if _f_onda:
+            st.caption(f"🔒 Mostrando só a **onda "
+                       f"{st.session_state.get('onda_travada')}**.")
+
         with st.expander("📋 Mapa pedido ↔ itens (conferência)"):
             c_simp, c_multi = st.columns(2)
             with c_simp:
-                st.markdown(f"##### 🟢 Simples ({len(dados['pedidos_simples_1un'])})")
-                for p in dados["pedidos_simples_1un"][:40]:
+                st.markdown(f"##### 🟢 Simples ({len(_simples_onda)})")
+                for p in _simples_onda[:40]:
                     it = p["itens"][0] if p["itens"] else {}
                     # #459 (sequencial Olist) na frente: curto, bate o olho na
                     # bancada e denuncia duplicata. O numero do marketplace
@@ -1167,8 +1219,8 @@ if fase(1):
                     _et = " 🏷️" if p.get("etiqueta_emitida") else ""
                     st.caption(f"**{_n}**`{p['numero_ecommerce']}`{_et} — {it.get('sku')}")
             with c_multi:
-                st.markdown(f"##### ⚠️ Multi-itens ({len(dados['pedidos_multi_itens'])})")
-                for p in dados["pedidos_multi_itens"]:
+                st.markdown(f"##### ⚠️ Multi-itens ({len(_multi_onda)})")
+                for p in _multi_onda:
                     _n = f"#{p['numero_olist']} " if p.get("numero_olist") else ""
                     _et = " 🏷️" if p.get("etiqueta_emitida") else ""
                     with st.expander(f"{_n}{p['numero_ecommerce']}{_et} — {p['qtd_total']} peças"):
@@ -1631,7 +1683,11 @@ if fase(4):
         st.divider()
         st.markdown("#### 📦 Pedidos a embalar")
         st.caption("Multi-itens primeiro — são os que mais erram na bancada.")
-        for p in dados["pedidos_multi_itens"]:
+        _emb = _so_da_onda(dados["pedidos_multi_itens"], _filtro_onda())
+        if st.session_state.get("onda_travada") is not None:
+            st.caption(f"🔒 Só a **onda {st.session_state['onda_travada']}** "
+                       f"— {len(_emb)} multi-item(ns).")
+        for p in _emb:
             with st.expander(f"🚨 {p['numero_ecommerce']} — {p['cliente'][:28]} "
                              f"({p['qtd_total']} peças)"):
                 for it in p["itens"]:
