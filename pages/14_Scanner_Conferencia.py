@@ -511,13 +511,19 @@ if st.session_state.exp_modo:
             st.error(f"**{ult['titulo']}**\n\n{ult['detalhe']}\n\n"
                      f"Código: `{ult.get('codigo','')}`")
 
-    # ---- camera ao vivo: le a etiqueta e dispara o "Conferir" sozinha ----
-    # Compacta (280px): aqui o operador ja sabe o que esta fazendo, o espaco
-    # vale mais pro contador e pro veredito da leitura.
-    # rearmar=True: aqui a bipagem e' continua (uma etiqueta atras da outra).
-    # Sem isso a camera morre depois do 1o codigo e o 2o bip trava.
-    camera_ao_vivo.render_camera(altura=280, botao_submit="Conferir",
-                                 rearmar=True)
+    # ---- seletor de modo de leitura na expedicao final ----
+    modo_exp = st.radio(
+        "Modo de Leitura (Expedição)",
+        ["🔫 Bipador Físico / Pistola (Rápido)", "📷 Câmera do Celular"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="exp_modo_leitura",
+    )
+
+    if "📷 Câmera" in modo_exp:
+        camera_ao_vivo.render_camera(altura=280, botao_submit="Conferir", rearmar=True)
+    else:
+        st.info("🔫 **Modo Bipador Físico Ativo**: Aponte a pistola/leitor para a etiqueta ou digite abaixo.")
 
     # ---- campo de bipagem: recebe da camera, da pistola ou digitado ----
     with st.form("form_exp_bipagem", clear_on_submit=True):
@@ -763,21 +769,23 @@ if st.session_state.get("scanner_msg_sync"):
     st.session_state.scanner_msg_sync = ""
 
 # ------------------------------------------------------------------ #
-# CAMERA — encolhe depois da leitura pra dar espaco a ficha
+# SELETOR DE DISPOSITIVO: BIPADOR FÍSICO / PISTOLA vs CÂMERA DO CELULAR
 # ------------------------------------------------------------------ #
-# ⚠️ ALTURA FIXA de proposito. Antes era `200 if tem_leitura else 420`, e a
-# mudanca de altura fazia o Streamlit DESTRUIR e recriar o iframe a cada
-# leitura — a camera reiniciava do zero e o operador esperava. Com altura
-# constante o iframe sobrevive ao rerun.
-#
-# rearmar=True: a camera religa sozinha apos entregar o codigo, entao da'
-# para bipar a proxima etiqueta sem esperar o salvamento da anterior
-# (pedido do Jota, 24/08). Ja' era usado na conferencia final; faltava aqui.
-camera_ao_vivo.render_camera(altura=320, botao_submit="Resolver",
-                             rearmar=True)
+modo_leitura = st.radio(
+    "Dispositivo de Leitura",
+    ["🔫 Bipador Físico / Pistola (Rápido)", "📷 Câmera do Celular (Leitor Óptico)"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="scanner_modo_leitura",
+)
 
-if not tem_leitura:
-    st.caption("Aponte a câmera para a etiqueta e toque em **📸 LER CÓDIGO** para realizar a leitura.")
+if "📷 Câmera" in modo_leitura:
+    # Renderiza o componente de vídeo apenas quando o usuário escolher a câmera
+    camera_ao_vivo.render_camera(altura=320, botao_submit="Resolver", rearmar=True)
+    if not tem_leitura:
+        st.caption("Aponte a câmera para a etiqueta e toque em **📸 LER CÓDIGO** para realizar a leitura.")
+else:
+    st.info("🔫 **Modo Bipador Físico Ativo**: Aponte a pistola/leitor para a etiqueta ou digite abaixo. O pedido será resolvido automaticamente ao bipar!")
 
 # Este formulario precisa ficar SEMPRE VISIVEL (nao dentro de expander
 # fechado): e' por ele que a camera entrega o codigo lido. O iframe do

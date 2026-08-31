@@ -157,33 +157,12 @@ st.caption("As 7 fases na ordem física do trabalho. Cada aba tem o botão de av
 #     sit 4 ->  8 pedidos   <- a fila a imprimir
 #     sit 7 ->  8 pedidos   (Pronto para envio: JA tem etiqueta)
 #
-# ⚠️ NAO voltar para 7: ali o pedido ja' passou pela etiqueta, e reimprimir e'
-# justamente o desperdicio que esta troca resolve. Nem para 2, que mistura
-# pedido velho e cancelado.
-SITUACAO_PADRAO = [4]           # 4 = Preparando envio
-#
-# 🔴 MAS a situacao 4 pode estar VAZIA (achado 25/08): naquele dia havia
-# 47 pedidos em `2` e 17 em `7`, e ZERO em `4` — a tela dizia
-# "0 pedidos em 3.4s" e a bancada ficava sem lista nenhuma.
-#
-# O fluxo do Olist nem sempre passa pela 4; depende de como o pedido entrou.
-# Entao a 4 continua sendo a PREFERIDA (mantem a regra do Jota de nao
-# reimprimir), mas quando ela nao traz nada caimos para 2+7 em vez de
-# devolver lista vazia. Melhor uma lista com pedido ja' impresso (marcado
-# com 🏷️) do que bancada parada.
-#
-# Decisao do Jota (25/08): quando a 4 esta' vazia, usar SO' a 7 — nao 2+7.
-# A situacao 7 e' o que tem ETIQUETA EMITIDA esperando a caixa: a lista de
-# montagem sai enxuta e bate 1-a-1 com a pilha de etiquetas na mao.
-# A situacao 2 (47 pedidos, de 1 a 12 dias) e' pedido real mas SEM etiqueta:
-# entra na lista depois, quando a etiqueta sair.
-SITUACAO_FALLBACK = [7]         # 7 = Pronto para envio (etiqueta ja' emitida)
+# 4 = Preparando envio (sem etiqueta emitida no Olist)
+# 7 = Pronto para envio (com etiqueta emitida no Olist / gerada via API)
+# Sincroniza AMBAS para que nenhum pedido fique de fora do lote de separação e bipagem.
+SITUACAO_PADRAO = [4, 7]
 LIMITE_PEDIDOS = 100            # o Olist recusa acima de 100
 
-# ⚠️ Constante direta, NAO `session_state.get("situacoes_sel", ...)`.
-# A sessao antiga guardava [2] da sidebar removida e o valor guardado vencia o
-# padrao novo — a tela seguia mostrando 39 pedidos da situacao 2 mesmo com o
-# codigo ja' corrigido para 7 (Jota flagrou em 2026-08-16).
 situacoes_sel = SITUACAO_PADRAO
 max_pedidos = LIMITE_PEDIDOS
 
@@ -1795,6 +1774,15 @@ if fase(5):
         except Exception as exc:
             st.warning(f"Câmera ao vivo indisponível: {exc}")
 
+        import core_scanner_resolver as s_resolver
+        import core_scanner_card as s_card
+
+        # Estado para manter a ficha do pedido aberta na Fase 6
+        if "fase6_resultado" not in st.session_state:
+            st.session_state.fase6_resultado = None
+        if "fase6_ultimo_codigo" not in st.session_state:
+            st.session_state.fase6_ultimo_codigo = ""
+
         # ---- Formulário de Bipagem / Pistola Bluetooth / Digitação Manual ---- #
         with st.form("form_bipagem_fase6", clear_on_submit=True):
             col_inp, col_btn = st.columns([3, 1])
@@ -1810,63 +1798,88 @@ if fase(5):
 
         if codigo and len(codigo.strip()) >= 3:
             termo = codigo.strip()
-            achados = sdb.buscar_parcial(termo, limit=8)
-
-            if not achados:
-                st.warning(f"Nada encontrado para `{termo}`. "
-                           "Rode **Atualizar separação** se a venda é nova.")
+            # 1. Tenta resolver diretamente como pedido oficial
+            res_direto = s_resolver.resolver_codigo(termo)
+            if res_direto and res_direto.get("encontrado"):
+                st.session_state.fase6_resultado = res_direto
+                st.session_state.fase6_ultimo_codigo = termo
             else:
-                if len(achados) > 1:
-                    st.caption(f"{len(achados)} resultados — escolha qual bipar:")
+                st.session_state.fase6_ultimo_codigo = termo
+                achados = sdb.buscar_parcial(termo, limit=8)
+                if not achados:
+                    st.warning(f"Nada encontrado para `{termo}`. "
+                               "Rode **Atualizar separação** se a venda é nova.")
+                    st.session_state.fase6_resultado = None
+                elif len(achados) == 1:
+                    # Match único -> já resolve direto
+                    res_unico = s_resolver.resolver_codigo(achados[0].get("tracking") or termo)
+                    if res_unico and res_unico.get("encontrado"):
+                        st.session_state.fase6_resultado = res_unico
+                    else:
+                        st.session_state.fase6_resultado = None
+                else:
+                    st.session_state.fase6_resultado = None
+                    st.caption(f"{len(achados)} resultados — escolha qual abrir:")
+                    for achado in achados:
+                        _trk = achado.get("tracking") or ""
+                        _ped = achado.get("pedido_ecommerce") or ""
+                        _img = achado.get("imagem_url") or ""
+                        _nome = (achado.get("produto_nome") or achado.get("sku_principal") or "")[:42]
+                        _cli = (achado.get("cliente_nome") or "")[:20]
+                        _ja = sdb.ja_conferido_hoje(_trk)
 
-                for achado in achados:
-                    track = achado.get("tracking") or ""
-                    ped = achado.get("pedido_ecommerce") or ""
-                    canal = (achado.get("canal") or "").upper()
-                    ja = sdb.ja_conferido_hoje(track)
-
-                    with st.container():
-                        c_info, c_btn = st.columns([3, 1])
-                        with c_info:
-                            st.markdown(
-                                f"{'✅ ' if ja else ''}`{track}` · **{canal}** · "
-                                f"pedido `{ped}`"
-                            )
-                            # Mostra o que tem na caixa — a conferencia de fato
-                            detalhe = " · ".join(x for x in (
-                                achado.get("sku_principal"),
-                                achado.get("cor"),
-                                f"kit {achado['kit']}" if achado.get("kit") else "",
-                            ) if x)
-                            if detalhe:
-                                st.caption(detalhe)
-                            if achado.get("produto_nome"):
-                                st.caption(str(achado["produto_nome"])[:70])
+                        c_img, c_btn = st.columns([1, 9], vertical_alignment="center")
+                        with c_img:
+                            if _img:
+                                st.image(_img, width=48)
+                            else:
+                                st.markdown("<div style='width:48px;height:48px;border-radius:6px;background:#1e293b;display:flex;align-items:center;justify-content:center;font-size:18px;'>📦</div>", unsafe_allow_html=True)
                         with c_btn:
-                            if ja:
-                                st.caption("já bipado hoje")
-                            elif st.button("📦 Bipar", key=f"bip_{track}",
-                                           use_container_width=True):
-                                ok = sdb.registrar_conferencia(
-                                    tracking=track, pedido_ecommerce=ped,
-                                    canal=canal,
-                                    sku_principal=achado.get("sku_principal", ""),
-                                    status="conferido",
-                                )
-                                if ok:
-                                    # Marca o instante no vídeo, se estiver gravando
-                                    try:
-                                        import core_video_expedicao as cvx
-                                        cvx.sinalizar_atividade_e_obter_indice(
-                                            tracking=track, auto_iniciar=False)
-                                    except Exception:
-                                        pass  # vídeo é opcional, nunca bloqueia
-                                    st.success(f"✅ {track} bipado.")
+                            rotulo = f"{'✅ ' if _ja else '📦 '}{_trk} · {achado.get('canal', '').upper()} · {_nome}" + (f" · {_cli}" if _cli else "")
+                            if st.button(rotulo, key=f"btn_sug_f6_{_trk}", use_container_width=True):
+                                res_sug = s_resolver.resolver_codigo(_trk)
+                                if res_sug and res_sug.get("encontrado"):
+                                    st.session_state.fase6_resultado = res_sug
+                                    st.session_state.fase6_ultimo_codigo = _trk
                                     st.rerun()
-                                else:
-                                    erro_visivel("6️⃣ Bipagem",
-                                                 f"Não foi possível registrar {track}",
-                                                 "registrar_conferencia devolveu False")
+
+        # ---- RENDERIZAÇÃO DA FICHA VISUAL DO PEDIDO (CARD COMPLETO DO SCANNER) ---- #
+        res_f6 = st.session_state.get("fase6_resultado")
+        if res_f6 and res_f6.get("encontrado"):
+            _trk_f6 = res_f6.get("tracking") or st.session_state.get("fase6_ultimo_codigo") or ""
+            _ja_conf = sdb.ja_conferido_hoje(_trk_f6) if _trk_f6 else False
+
+            s_card.render_ficha_pedido(res_f6, ja_conferido=_ja_conf)
+
+            # Botões de Ação da Ficha
+            c_act1, c_act2 = st.columns([2, 1])
+            with c_act1:
+                rot_btn = "⚠️ JÁ BIPADO HOJE (Bipar novamente)" if _ja_conf else "✅ MARCAR COMO CONFERIDO / BIPADO"
+                if st.button(rot_btn, key="btn_confirmar_bip_f6", type="primary", use_container_width=True):
+                    ok = sdb.registrar_conferencia(
+                        tracking=_trk_f6,
+                        pedido_ecommerce=res_f6.get("pedido_ecommerce") or "",
+                        canal=(res_f6.get("canal") or "").upper(),
+                        sku_principal=res_f6.get("sku") or "",
+                        status="cancelado" if res_f6.get("cancelado") else "conferido",
+                    )
+                    if ok:
+                        try:
+                            import core_video_expedicao as cvx
+                            cvx.sinalizar_atividade_e_obter_indice(tracking=_trk_f6, auto_iniciar=False)
+                        except Exception:
+                            pass
+                        st.success(f"✅ Pedido `{_trk_f6}` conferido e registrado!")
+                        st.session_state.fase6_resultado = None
+                        st.session_state.fase6_ultimo_codigo = ""
+                        st.rerun()
+                    else:
+                        erro_visivel("6️⃣ Bipagem", f"Não foi possível registrar {_trk_f6}", "registrar_conferencia devolveu False")
+            with c_act2:
+                if st.button("📷 Ler outro / Limpar", key="btn_limpar_ficha_f6", use_container_width=True):
+                    st.session_state.fase6_resultado = None
+                    st.session_state.fase6_ultimo_codigo = ""
+                    st.rerun()
 
         # ---- Últimas bipagens ------------------------------------------- #
         ultimas = sdb.ultimas_conferencias(limit=12)
