@@ -186,28 +186,28 @@ def _ordem_da_esteira() -> list[str]:
 def _escrever_nome_civil(pagina, impresso: str, civil: str, cnr) -> int:
     """Acrescenta o nome civil na etiqueta. Devolve quantos nomes escreveu.
 
-    Regra do Jota (01/09/2026):
+    Regra do Jota (01/09/2026, refinada):
 
-        "ao lado do nick name coloca os 2 primeiros nomes sempre limitando
-         caracter, se ele possuir mais q isso de nome aí vc replica o nome
-         completo abaixo do endereço... assim atende aos termos legais e tem
-         a opção do nome completo embaixo"
+        "ao completar o nome da pessoa q estiver nick, coloque sempre o
+         primeiro nome e o ultimo nome... nao precisa colocar o nome todo
+         assim dificilmente vai estourar[;] se ver q vai estourar colocar na
+         lacuna limpa"
 
-    Ou seja, dois lugares com papeis distintos:
+    PRIMEIRO + ULTIMO nome, sempre -- e' o que identifica a pessoa para o
+    carteiro ("Rosilene Silva"), e curto o bastante para caber ao lado do
+    nick na maioria dos casos. Nome do meio nao acrescenta identificacao e e'
+    justamente o que fazia o texto estourar.
 
-    1. **Ao lado do nick**: apenas os DOIS primeiros nomes, e so' se couberem
-       no espaco real ate' o proximo elemento da pagina. Serve para o
-       carteiro bater o olho e identificar a pessoa.
-    2. **Abaixo do endereco**: o nome COMPLETO, quando ele tem mais que dois
-       nomes -- e' o que atende ao lado legal (bater com o CPF da NF-e).
+    Quando nem assim cabe, o nome vai inteiro para a LACUNA LIMPA: a faixa
+    vazia entre o fim do endereco e o proximo elemento da etiqueta (na J&T,
+    entre o endereco e o numero grande do pacote). Escreve-se logo acima da
+    margem inferior dessa area, nao colado no endereco.
 
-    ⚠️ A tentativa anterior escrevia o nome completo na mesma linha e ele
-    SOBREPUNHA o texto vizinho (achado real 31/08: "user9945697717580
-    (Nilson Oliveira Do Nascimen̶t̶o̶)" saiu por cima do endereco). A causa:
-    `_limite_direito_real` so' olha obstaculos na MESMA faixa vertical da
-    linha, e o endereco fica na linha de baixo -- entao "cabia" pelo calculo
-    e atropelava na pratica. Limitar a dois nomes reduz drasticamente o
-    risco, e a checagem de espaco continua valendo.
+    ⚠️ A primeira tentativa escrevia o nome completo na mesma linha do nick e
+    SOBREPUNHA o endereco (achado 31/08: "user9945697717580 (Nilson Oliveira
+    Do Nascimen̶t̶o̶)"). Causa: `_limite_direito_real` so' enxerga obstaculos
+    na MESMA faixa vertical da linha, e o endereco fica na linha de baixo --
+    entao "cabia" no calculo e atropelava no papel.
     """
     import fitz
 
@@ -216,34 +216,90 @@ def _escrever_nome_civil(pagina, impresso: str, civil: str, cnr) -> int:
         return 0
 
     caixa = achados[0]
-    escritos = 0
     partes = civil.split()
+    if not partes:
+        return 0
 
-    # --- 1) dois primeiros nomes, ao lado do nick ---------------------- #
-    curto = " ".join(partes[:2])
+    # Primeiro + ultimo. Nome de uma palavra so' usa ela mesma.
+    curto = partes[0] if len(partes) == 1 else f"{partes[0]} {partes[-1]}"
+
+    # --- 1) ao lado do nick, se couber de verdade ---------------------- #
     limite = cnr._limite_direito_real(pagina, caixa.y0, caixa.y1, caixa.x1)
     texto = cnr.encurtar_para_caber(curto, caixa.x1, limite, "hebo", 8.3)
     if texto:
         pagina.insert_text(fitz.Point(caixa.x1, caixa.y1), texto,
                            fontsize=8.3, fontname="hebo", color=(0, 0, 0),
                            overlay=True)
-        escritos += 1
+        return 1
 
-    # --- 2) nome completo, abaixo do endereco -------------------------- #
-    # So' quando ha' mais que os dois nomes ja' escritos -- senao seria
-    # repetir a mesma informacao duas vezes na mesma etiqueta.
-    if len(partes) > 2:
-        pos = cnr._linha_livre_abaixo(pagina, caixa)
-        if pos is not None:
-            y2, limite2 = pos
-            completo = cnr.encurtar_para_caber(civil, caixa.x0, limite2,
-                                               "hebo", 7.5)
-            if completo:
-                pagina.insert_text(fitz.Point(caixa.x0, y2),
-                                   completo.strip(), fontsize=7.5,
-                                   fontname="hebo", color=(0, 0, 0),
-                                   overlay=True)
-                escritos += 1
+    # --- 2) nao coube: vai para a lacuna limpa ------------------------- #
+    pos = _lacuna_limpa(pagina, caixa)
+    if pos is None:
+        return 0
+
+    y_base, limite_dir = pos
+    na_lacuna = cnr.encurtar_para_caber(curto, caixa.x0, limite_dir, "hebo", 7.5)
+    if not na_lacuna:
+        return 0
+
+    pagina.insert_text(fitz.Point(caixa.x0, y_base), na_lacuna.strip(),
+                       fontsize=7.5, fontname="hebo", color=(0, 0, 0),
+                       overlay=True)
+    return 1
+
+
+def _lacuna_limpa(pagina, caixa_nome, altura_min: float = 9.0):
+    """(y_da_linha_de_base, limite_direito) da faixa vazia sob o endereco.
+
+    A caixa do destinatario termina antes do proximo elemento da etiqueta
+    (na J&T, o numero grande do pacote). Medido em etiqueta real: endereco
+    acaba em y=154.1 e o numero comeca em y=166.9 -- ~12.8pt de espaco
+    limpo.
+
+    Escreve logo ACIMA da margem inferior dessa faixa (pedido do Jota), nao
+    colado no endereco: assim o nome nao parece continuacao do endereco nem
+    encosta no elemento de baixo.
+
+    `None` quando a folga nao comporta a linha.
+    """
+    x_esq = caixa_nome.x0
+
+    # Onde o bloco do destinatario (nome + endereco) termina: ultima linha
+    # alinhada a` mesma margem esquerda.
+    fim_bloco = caixa_nome.y1
+    for bloco in pagina.get_text("dict")["blocks"]:
+        for linha in bloco.get("lines", []):
+            for trecho in linha.get("spans", []):
+                bx0, by0, _, by1 = trecho["bbox"]
+                if abs(bx0 - x_esq) < 12 and by0 >= caixa_nome.y0:
+                    fim_bloco = max(fim_bloco, by1)
+
+    # Primeiro elemento QUALQUER abaixo disso -- e' o teto da lacuna.
+    proximo_y = pagina.rect.height
+    for bloco in pagina.get_text("dict")["blocks"]:
+        for linha in bloco.get("lines", []):
+            for trecho in linha.get("spans", []):
+                by0 = trecho["bbox"][1]
+                if by0 > fim_bloco + 0.5:
+                    proximo_y = min(proximo_y, by0)
+
+    if (proximo_y - fim_bloco) < altura_min:
+        return None
+
+    # Base do texto 2pt acima do proximo elemento: "pouco acima da margem
+    # inferior dessa caixa", como pedido.
+    y_base = proximo_y - 2.0
+
+    # Limite horizontal: qualquer conteudo a` direita nessa mesma faixa
+    # (a coluna do codigo de barras vertical, por exemplo).
+    limite = pagina.rect.width - 6.0
+    for bloco in pagina.get_text("dict")["blocks"]:
+        for linha in bloco.get("lines", []):
+            for trecho in linha.get("spans", []):
+                bx0, by0, _, by1 = trecho["bbox"]
+                if bx0 > x_esq + 20 and by0 < y_base + 2 and by1 > y_base - 9:
+                    limite = min(limite, bx0 - 3)
+    return y_base, limite
 
     return escritos
 
