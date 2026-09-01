@@ -157,6 +157,16 @@ st.caption("As 7 fases na ordem física do trabalho. Cada aba tem o botão de av
 #     sit 4 ->  8 pedidos   <- a fila a imprimir
 #     sit 7 ->  8 pedidos   (Pronto para envio: JA tem etiqueta)
 #
+# ⚠️ NAO voltar para 7: ali o pedido ja' passou pela etiqueta, e reimprimir e'
+# justamente o desperdicio que esta troca resolve.
+#
+# 🔴 CORRECAO 29/08: o mapeamento numerico de `situacao` usado nos
+# comentarios antigos deste arquivo estava ERRADO. Confirmado na doc
+# oficial (api-docs.erp.olist.com/api-reference/pedidos/listar-pedidos):
+#   0=Aberta 1=Faturada 2=CANCELADA 3=Aprovada 4=Preparando Envio
+#   5=Enviada 6=Entregue 7=Pronto Envio 8=Dados Incompletos 9=Nao Entregue
+# A situacao 2 e' CANCELADA, nao "em separacao". Os comentarios antigos
+# aqui embaixo (pre-29/08) chamavam 2 de "pedido real sem etiqueta" — errado,
 # 4 = Preparando envio (sem etiqueta emitida no Olist)
 # 7 = Pronto para envio (com etiqueta emitida no Olist / gerada via API)
 # Sincroniza AMBAS para que nenhum pedido fique de fora do lote de separação e bipagem.
@@ -352,6 +362,125 @@ def _so_da_onda(pedidos: list, filtro: set[str] | None) -> list:
             if str(p.get("numero_ecommerce") or "").upper() in filtro]
 
 
+def _painel_adicionar(ondas, _pend, _todos, _slots, _por_slot, _rotulo,
+                      chave: str, destino_padrao=None) -> bool:
+    """Painel de mandar pedidos pendentes para uma onda.
+
+    ⚠️ Fica FORA do bloco "fila livre" de proposito (Jota, 01/09): antes ele
+    so' existia quando nenhuma onda estava travada, entao quem escolhia a
+    onda 1 no seletor perdia a unica forma de alimentar aquela onda --
+    "consegui limpar onda, porem nao consegui associar os novos".
+
+    `destino_padrao` pre-seleciona a onda travada, para o caminho comum
+    (estou na onda 3, quero jogar estes pedidos nela) ser um clique.
+
+    Devolve True quando gravou algo (o chamador da' rerun).
+    """
+    import streamlit as st
+
+    if not _pend:
+        st.info("✅ Nenhum pedido pendente — tudo já está em alguma onda.")
+        return False
+
+    # Contagem por plataforma ANTES do filtro: e' o que o Jota quer ver de
+    # relance ("tipo 5 shopee e 9 TikTok").
+    _por_canal: dict[str, int] = {}
+    for p in _pend:
+        c = str(p.get("canal") or "?")
+        _por_canal[c] = _por_canal.get(c, 0) + 1
+    _resumo_canais = " · ".join(f"**{c}** {n}" for c, n in
+                                sorted(_por_canal.items(), key=lambda x: -x[1]))
+
+    with st.expander(
+            f"➕ Mandar pedidos para uma onda — {len(_pend)} a processar",
+            expanded=True):
+        st.caption(f"Na fila: {_resumo_canais}")
+
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            _canais = sorted(_por_canal)
+            _fil = st.multiselect(
+                "Plataformas", options=_canais, default=_canais,
+                format_func=lambda c: f"{c} ({_por_canal.get(c, 0)})",
+                key=f"filtro_canal_onda_{chave}",
+                help="Deixe só a plataforma que você quer mandar para a onda.")
+        with c2:
+            _opts = list(ondas.SLOTS)
+            _ix = _opts.index(destino_padrao) if destino_padrao in _opts else 0
+            _destino = st.selectbox(
+                "Mandar para a onda", options=_opts, index=_ix,
+                format_func=_rotulo, key=f"slot_destino_{chave}")
+
+        _cand = [p for p in _pend if str(p.get("canal") or "?") in _fil]
+
+        if not _cand:
+            st.caption("Nenhum pedido nas plataformas selecionadas.")
+            return False
+
+        # Marcar/desmarcar todos: com 14+ pedidos, clicar um a um e' o que
+        # torna a tela cansativa. Mexe nas keys dos checkboxes ANTES de eles
+        # serem desenhados -- por isso o rerun logo em seguida.
+        b1, b2, _ = st.columns([1, 1, 2])
+        with b1:
+            if st.button("☑️ Marcar todos", key=f"todos_on_{chave}",
+                         use_container_width=True):
+                for p in _cand:
+                    st.session_state[f"sel_{chave}_"
+                                     f"{str(p.get('numero_ecommerce') or '')}"] = True
+                st.rerun()
+        with b2:
+            if st.button("⬜ Desmarcar todos", key=f"todos_off_{chave}",
+                         use_container_width=True):
+                for p in _cand:
+                    st.session_state[f"sel_{chave}_"
+                                     f"{str(p.get('numero_ecommerce') or '')}"] = False
+                st.rerun()
+
+        st.caption(f"{len(_cand)} pedido(s) no filtro:")
+
+        _escolhidos = []
+        for p in _cand:
+            n = str(p.get("numero_ecommerce") or "")
+            it = (p.get("itens") or [{}])[0]
+            rot = (f"#{p.get('numero_olist') or '?'} · {p.get('canal')} · "
+                   f"{it.get('quantidade', 1)}x {it.get('sku', '')}")
+            if st.checkbox(rot, value=True, key=f"sel_{chave}_{n}"):
+                _escolhidos.append(n)
+
+        # Slot ocupado: o operador decide somar ou substituir. A tela NUNCA
+        # escolhe sozinha (decisao do Jota, 31/08).
+        _ocupado = not _por_slot.get(_destino, {}).get("vazio", True)
+        if _ocupado:
+            _modo = st.radio(
+                f"A onda {_destino} já tem "
+                f"{_por_slot.get(_destino, {}).get('pedidos', 0)} pedido(s):",
+                options=["somar", "substituir"],
+                format_func=lambda m: ("➕ Acrescentar aos que já estão"
+                                       if m == "somar"
+                                       else "♻️ Substituir todo o conteúdo"),
+                horizontal=True, key=f"modo_slot_{chave}")
+        else:
+            _modo = "somar"
+
+        if st.button(
+                f"💾 Mandar {len(_escolhidos)} pedido(s) para a onda {_destino}",
+                key=f"btn_onda_sel_{chave}", type="primary",
+                disabled=not _escolhidos, use_container_width=True):
+            _alvo_ped = [p for p in _todos
+                         if str(p.get("numero_ecommerce") or "") in _escolhidos]
+            r_s = ondas.salvar_slot(_destino, _alvo_ped, modo=_modo)
+            st.success(f"✅ Onda {r_s['slot']}: {r_s['gravados']} pedido(s).")
+            # Pedido movido de outra onda precisa ser VISIVEL -- senao parece
+            # que sumiu da onda antiga sem explicacao.
+            if r_s.get("movidos"):
+                st.warning("Movidos de outra onda: " + ", ".join(
+                    f"`{m['numero_ecommerce']}` (onda {m['de']} → {m['para']})"
+                    for m in r_s["movidos"]))
+            return True
+
+    return False
+
+
 def _widget_ondas(chave: str) -> tuple[list, list, list]:
     """Painel de Ondas de Expedição — seleciona a onda de trabalho e a trava.
 
@@ -545,6 +674,13 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                                "para a fila livre.")
                     st.rerun()
 
+        # Alimentar a onda SEM sair dela: com a onda travada o painel de
+        # adicionar ficava inacessivel, e nao havia como associar pedido
+        # nenhum (Jota, 01/09). Ja' vem apontando para a onda travada.
+        if _painel_adicionar(ondas, _pend, _todos, _slots, _por_slot, _rotulo,
+                             chave, destino_padrao=_travada):
+            st.rerun()
+
         st.divider()
         return _alvo, _pend, _feitos
 
@@ -561,66 +697,11 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                 st.caption(f"{_m} **{_s['slot']}**\n\n{_s['pedidos']} ped · "
                            f"{_s['total_fases']}/7{_r}")
 
-    if not _pend:
-        st.info("Nenhum pedido pendente — tudo já está em alguma onda.")
-    else:
-        with st.expander(f"➕ Colocar pedidos numa onda ({len(_pend)} pendente(s))",
-                          expanded=(chave == "f1")):
-            _canais = sorted({str(p.get("canal") or "?") for p in _pend})
-            _fil = st.multiselect(
-                "Filtrar por plataforma", options=_canais, default=_canais,
-                key=f"filtro_canal_onda_{chave}")
-            _cand = [p for p in _pend if str(p.get("canal") or "?") in _fil]
-
-            cA, cB = st.columns([1, 1])
-            with cA:
-                _destino = st.selectbox(
-                    "Colocar na onda", options=ondas.SLOTS,
-                    format_func=lambda n: _rotulo(n),
-                    key=f"slot_destino_{chave}")
-            with cB:
-                # Slot ocupado: o operador decide somar ou substituir. A tela
-                # NUNCA escolhe sozinha (decisao do Jota, 31/08).
-                _ocupado = not _por_slot.get(_destino, {}).get("vazio", True)
-                _modo = st.radio(
-                    "Se a onda já tiver pedidos",
-                    options=["somar", "substituir"],
-                    format_func=lambda m: ("➕ Acrescentar aos que já estão"
-                                           if m == "somar"
-                                           else "♻️ Substituir o conteúdo"),
-                    horizontal=False, key=f"modo_slot_{chave}",
-                    disabled=not _ocupado,
-                    help=("A onda está vazia — nada a decidir."
-                          if not _ocupado else None))
-
-            st.caption(f"{len(_cand)} pedido(s) no filtro. "
-                       "Desmarque os que NÃO entram nesta onda.")
-
-            _escolhidos = []
-            for p in _cand:
-                n = str(p.get("numero_ecommerce") or "")
-                it = (p.get("itens") or [{}])[0]
-                rot = (f"#{p.get('numero_olist') or '?'} · {p.get('canal')} · "
-                       f"{it.get('quantidade', 1)}x {it.get('sku', '')}")
-                if st.checkbox(rot, value=True, key=f"sel_{chave}_{n}"):
-                    _escolhidos.append(n)
-
-            if st.button(f"💾 Salvar {len(_escolhidos)} pedido(s) na onda {_destino}",
-                         key=f"btn_onda_sel_{chave}", type="primary",
-                         disabled=not _escolhidos, use_container_width=True):
-                _alvo_ped = [p for p in _todos
-                             if str(p.get("numero_ecommerce") or "") in _escolhidos]
-                r_s = ondas.salvar_slot(_destino, _alvo_ped,
-                                        modo=_modo if _ocupado else "somar")
-                st.success(f"✅ Onda {r_s['slot']}: {r_s['gravados']} pedido(s).")
-                # Pedido movido de outra onda precisa ser VISIVEL — senao
-                # parece que sumiu da onda antiga sem explicacao.
-                if r_s.get("movidos"):
-                    st.warning(
-                        "Movidos de outra onda: " + ", ".join(
-                            f"`{m['numero_ecommerce']}` (onda {m['de']} → "
-                            f"{m['para']})" for m in r_s["movidos"]))
-                st.rerun()
+    # Mesmo painel usado com a onda travada -- uma so implementacao, para
+    # os dois caminhos nao divergirem de comportamento.
+    if _painel_adicionar(ondas, _pend, _todos, _slots, _por_slot, _rotulo,
+                         chave):
+        st.rerun()
 
     # Onda impressa ANTES deste mecanismo (ou fora do sistema).
     with st.expander("📌 Já imprimi antes — informar o último pedido processado"):
@@ -736,7 +817,8 @@ if fase(0):
     if not st.session_state.get("dados_separacao"):
         with st.spinner("Sincronizando fila do Olist para checar as ondas..."):
             atualizar_separacao()
-    _widget_ondas("f1")
+    _alvo_f1, _pend_f1, _feitos_f1 = _widget_ondas("f1")
+    st.session_state["_pend_olist_count"] = len(_pend_f1)
 
     # ---- CICLO: escolher AGORA quais pedidos entram, antes de baixar ------ #
     # Jota (25/08): "o ideal e' na fase um a gente fazer ja' essa selecao dos
@@ -804,12 +886,27 @@ if fase(0):
         help="Cada etiqueta recebe o cartão do seu próprio canal.",
     )
 
+    # Filtro por marketplace (Jota, 29/08): sábado nao tem postagem TikTok,
+    # so' Shopee — sem isto era baixar os 3 e ignorar o resto na mao.
+    _canais_marcados = st.multiselect(
+        "Canais a incluir", options=["tiktok", "shopee", "ml"],
+        default=["tiktok", "shopee", "ml"], key="canais_baixar_tudo",
+        format_func=lambda c: {"tiktok": "🎵 TikTok Shop", "shopee": "🛒 Shopee",
+                               "ml": "🟡 Mercado Livre"}[c],
+        help="Desmarque o que não vai postar hoje — o botão baixa só o "
+             "que estiver marcado.",
+    )
+
     c_tudo, c_dl = st.columns([1, 1])
 
     with c_tudo:
-        if st.button("⚡ Baixar TikTok + Shopee + ML juntos", type="primary",
-                     use_container_width=True, key="btn_etq_tudo"):
-            with st.spinner("Baixando os três canais ao mesmo tempo..."):
+        _rotulo_btn = ("⚡ Baixar " + " + ".join(
+            {"tiktok": "TikTok", "shopee": "Shopee", "ml": "ML"}[c]
+            for c in _canais_marcados)) if _canais_marcados else "⚡ Selecione ao menos 1 canal"
+        if st.button(_rotulo_btn, type="primary",
+                     use_container_width=True, key="btn_etq_tudo",
+                     disabled=not _canais_marcados):
+            with st.spinner(f"Baixando {len(_canais_marcados)} canal(is)..."):
                 try:
                     # A fase 1 so' BAIXA. Ordenar pela sequencia de embalagem e
                     # numerar #1..#N e' trabalho da FASE 3, que roda depois da
@@ -817,7 +914,7 @@ if fase(0):
                     # (Jota, 19/08: "temos fase... o numerar deveria ser na
                     #  fase 3 apos ordenar por produto na sequencia")
                     import core_etiquetas_todas as cet
-                    r_tudo = cet.baixar_tudo(canais=["tiktok", "shopee", "ml"],
+                    r_tudo = cet.baixar_tudo(canais=_canais_marcados,
                                              com_cartao=com_cartao_tudo,
                                              somente=st.session_state.get("ciclo_selecionado"))
                     st.session_state["etq_tudo"] = r_tudo
@@ -829,6 +926,24 @@ if fase(0):
                         st.success(f"✅ {r_tudo['resumo']}")
                     else:
                         st.warning("Nenhuma etiqueta disponível nos três canais.")
+
+                    # 🔴 Achado real (29/08): "Baixar tudo" consulta Shopee/
+                    # TikTok/ML direto — a Fila de ondas conta pedidos JA'
+                    # SINCRONIZADOS no Olist (snapshot manual, ver
+                    # `atualizar_separacao`). As duas contagens podem divergir
+                    # sem nenhum erro aparecer: baixou etiqueta de pedido que
+                    # o Olist ainda nao' viu. Sem este aviso, a Fila mostra
+                    # "2 pendentes" enquanto 10 etiquetas ja' foram baixadas,
+                    # e ninguem percebe a defasagem.
+                    _pend_olist = st.session_state.get("_pend_olist_count", 0)
+                    if r_tudo["total"] > _pend_olist:
+                        st.warning(
+                            f"⚠️ Baixei **{r_tudo['total']} etiqueta(s)**, mas a "
+                            f"Fila de ondas só tem **{_pend_olist} pendente(s)** "
+                            "do Olist. Provável que o Olist esteja desatualizado "
+                            "— clique em **Atualizar separação** (Fase 2) antes "
+                            "de montar a onda, senão pedido fica de fora."
+                        )
 
                     # Envio ML `pending` nao imprime por API NENHUMA (nem ML nem
                     # Olist): so' pelo modal do Olist. Sem avisar aqui, o pedido
@@ -1775,19 +1890,27 @@ if fase(4):
                     st.caption(f"Resolução: {estado['dimensao_real']}")
 
             with col_img:
-                # ⚠️ O preview NAO passa pelo servidor. Antes era um
-                # `st.fragment(run_every=1)`: cada quadro fazia round-trip
-                # Streamlit (encode JPEG -> websocket -> redesenho), o que dava
-                # ~1s de atraso e imagem travada (Jota, 2026-08-16: "lag muito
-                # grande e lenta").
+                # ⚠️ A webcam da bancada e' EXCLUSIVA da gravacao — nao
+                # compartilha com nada (bipagem usa bipador de hardware
+                # dedicado, nao a camera). Por isso o preview NAO pode abrir
+                # a camera de novo via `getUserMedia` no navegador: isso
+                # disputaria o mesmo dispositivo com o ffmpeg e arriscaria
+                # derrubar a gravacao de prova, que e' o proposito do sistema
+                # (Jota, 30/08/2026). O preview tem que ler o frame que o
+                # ffmpeg JA capturou, nunca abrir a camera por conta propria.
                 #
-                # Agora o <video> abre a camera direto no navegador: fluido,
-                # sem atraso e sem carregar o servidor. Como o ffmpeg NAO
-                # retem exclusividade da webcam no Windows, os dois convivem.
-                @st.fragment(run_every=2 if ao_vivo else None)
+                # O lag antigo vinha de 2 lugares, ambos corrigidos em
+                # 30/08/2026: (1) `ultimo_frame` so' atualizava 1x/segundo
+                # dentro do loop de gravacao — agora atualiza a ~5 fps, já
+                # reduzido para 480px ANTES do copy() (ver
+                # core_video_expedicao.py, nao repete o incidente de 16/08
+                # onde copiar o frame ORIGINAL a alta taxa derrubava a
+                # gravacao); (2) o fragment so' pedia novo quadro a cada 2s —
+                # agora pede a cada 0.5s, acompanhando o novo throughput.
+                @st.fragment(run_every=0.5 if ao_vivo else None)
                 def _preview_ao_vivo():
                     try:
-                        jpeg = cv.frame_atual_jpeg()
+                        jpeg = cv.frame_atual_jpeg(qualidade=65, largura_maxima=480)
                         if jpeg:
                             st.image(
                                 jpeg, use_container_width=True,
@@ -1840,6 +1963,35 @@ if fase(5):
         "Bipa a etiqueta de cada caixa. Funciona **na tela ou pelo celular** — "
         "os dois gravam no mesmo lugar. Pistola Bluetooth também: digita e dá Enter."
     )
+
+    # ⚠️ App DESKTOP dedicado, fora do Streamlit (Jota, 30/08/2026): o campo
+    # de bipagem aqui na tela so' recebe a leitura da pistola se JA' estiver
+    # com foco — clicou em outro lugar da pagina e a leitura se perde. O
+    # `app_bipador.py` roda em janela propria e recupera o foco sozinho, sem
+    # depender de onde o mouse esta'. Abre em PROCESSO SEPARADO
+    # (`subprocess.Popen` sem esperar) — nunca embutido no Streamlit, pra
+    # nao herdar a mesma trava de foco do navegador.
+    c_bip1, c_bip2 = st.columns([1, 3])
+    with c_bip1:
+        if st.button("🖥️ Abrir Bipador Rápido", type="primary",
+                     use_container_width=True, key="btn_abrir_bipador_desktop"):
+            try:
+                import subprocess
+                subprocess.Popen(
+                    ["C:\\JF_Automacoes\\.venv\\Scripts\\pythonw.exe",
+                     "C:\\JF_Automacoes\\app_bipador.py"],
+                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+                )
+                st.success("Bipador aberto em janela própria — mantém o foco sozinho.")
+            except Exception as exc:
+                erro_visivel("6️⃣ Bipagem", "Não consegui abrir o bipador desktop", exc)
+    with c_bip2:
+        st.caption(
+            "Recomendado para a bancada: fica em janela própria, mantém o "
+            "foco sozinho (a pistola nunca perde o campo) e já registra a "
+            "conferência automático. Mesmo atalho na área de trabalho: "
+            "**Bipador de Pedidos - J&F Co**."
+        )
 
     try:
         import core_scanner_db as sdb
@@ -1895,12 +2047,29 @@ if fase(5):
             st.info("📱 Pelo celular: abra o mesmo endereço no Wi-Fi. "
                     "🔫 Pistola: clique no campo abaixo e bipe.")
 
-        # ---- Scanner de Câmera Oficial Consagrado (AO VIVO + Foto Nativa) ---- #
-        try:
-            import scanner_camera_ao_vivo as cam_ao_vivo
-            cam_ao_vivo.render_camera(altura=320, botao_submit="Bipar", rearmar=True)
-        except Exception as exc:
-            st.warning(f"Câmera ao vivo indisponível: {exc}")
+        # ---- Modo de bipagem: pistola ou câmera ---- #
+        #
+        # No PC e' sempre pistola; no celular pode ser qualquer um dos dois
+        # (Jota, 28/08). Em vez de adivinhar o aparelho -- deteccao erra com
+        # tablet e notebook com touch --, quem escolhe e' o operador. A camera
+        # so' e' montada quando pedida: ela pede permissao do navegador e
+        # segura a webcam, entao carregar a toa atrapalha quem usa pistola.
+        _modo_bip = st.radio(
+            "Como vai bipar?",
+            options=["🔫 Pistola / digitação", "📷 Câmera"],
+            horizontal=True, key="modo_bipagem_f6",
+            help="A câmera só é carregada quando você escolhe — assim ela não "
+                 "pede permissão nem ocupa a webcam à toa.",
+        )
+        _usar_camera = _modo_bip.startswith("📷")
+
+        if _usar_camera:
+            try:
+                import scanner_camera_ao_vivo as cam_ao_vivo
+                cam_ao_vivo.render_camera(altura=320, botao_submit="Bipar",
+                                          rearmar=True)
+            except Exception as exc:
+                st.warning(f"Câmera ao vivo indisponível: {exc}")
 
         import core_scanner_resolver as s_resolver
         import core_scanner_card as s_card
@@ -1923,6 +2092,39 @@ if fase(5):
                 )
             with col_btn:
                 btn_bipar = st.form_submit_button("🔍 Bipar", use_container_width=True, type="primary")
+
+        if not _usar_camera:
+            # ⚠️ O scanner USB e' um teclado (HID): ele "digita" o codigo + Enter
+            # no campo que estiver com foco NAQUELE instante. Cada rerun do
+            # Streamlit recria o DOM e o navegador perde o foco do campo —
+            # sintoma relatado (Jota, 30/08/2026): "so' funciona se clicarmos
+            # na tela". Este script roda a cada rerun (faz parte do HTML
+            # renderizado de novo) e devolve o foco pro campo de bipagem
+            # sozinho, sem precisar clicar. `parent.document` porque o
+            # componente vive num iframe — o campo real esta' na pagina pai.
+            st.components.v1.html(
+                """
+                <script>
+                (function() {
+                    function focarCampoBipagem() {
+                        try {
+                            const doc = window.parent.document;
+                            const campo = doc.querySelector(
+                                'input[aria-label="Código de rastreio, nº do pedido ou 3+ caracteres:"]'
+                            );
+                            if (campo && doc.activeElement !== campo) {
+                                campo.focus();
+                            }
+                        } catch (e) { /* iframe entre dominios: nunca deveria acontecer aqui */ }
+                    }
+                    focarCampoBipagem();
+                    setTimeout(focarCampoBipagem, 150);
+                    setTimeout(focarCampoBipagem, 500);
+                })();
+                </script>
+                """,
+                height=0,
+            )
 
         if codigo and len(codigo.strip()) >= 3:
             termo = codigo.strip()
@@ -2082,12 +2284,21 @@ if fase(6):
         else:
             st.error(f"🚨 **PACOTE NÃO ENCONTRADO NO LOTE DE HOJE**: `{ult.get('codigo')}`")
 
-    # ---- Câmera ao Vivo Consagrada para Conferência Final ---- #
-    try:
-        import scanner_camera_ao_vivo as cam_ao_vivo
-        cam_ao_vivo.render_camera(altura=280, botao_submit="Conferir Final", rearmar=True)
-    except Exception as exc:
-        st.warning(f"Câmera ao vivo indisponível: {exc}")
+    # ---- Modo de bipagem (mesma escolha da fase 6) ---- #
+    _modo_conf = st.radio(
+        "Como vai conferir?",
+        options=["🔫 Pistola / digitação", "📷 Câmera"],
+        horizontal=True, key="modo_bipagem_f7",
+        help="A câmera só é carregada quando você escolhe.",
+    )
+
+    if _modo_conf.startswith("📷"):
+        try:
+            import scanner_camera_ao_vivo as cam_ao_vivo
+            cam_ao_vivo.render_camera(altura=280, botao_submit="Conferir Final",
+                                      rearmar=True)
+        except Exception as exc:
+            st.warning(f"Câmera ao vivo indisponível: {exc}")
 
     # ---- Formulário de Bipagem / Pistola Bluetooth ---- #
     with st.form("form_conf_final_bipagem", clear_on_submit=True):
