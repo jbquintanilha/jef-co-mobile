@@ -183,6 +183,71 @@ def _ordem_da_esteira() -> list[str]:
     return ordem
 
 
+def _escrever_nome_civil(pagina, impresso: str, civil: str, cnr) -> int:
+    """Acrescenta o nome civil na etiqueta. Devolve quantos nomes escreveu.
+
+    Regra do Jota (01/09/2026):
+
+        "ao lado do nick name coloca os 2 primeiros nomes sempre limitando
+         caracter, se ele possuir mais q isso de nome aí vc replica o nome
+         completo abaixo do endereço... assim atende aos termos legais e tem
+         a opção do nome completo embaixo"
+
+    Ou seja, dois lugares com papeis distintos:
+
+    1. **Ao lado do nick**: apenas os DOIS primeiros nomes, e so' se couberem
+       no espaco real ate' o proximo elemento da pagina. Serve para o
+       carteiro bater o olho e identificar a pessoa.
+    2. **Abaixo do endereco**: o nome COMPLETO, quando ele tem mais que dois
+       nomes -- e' o que atende ao lado legal (bater com o CPF da NF-e).
+
+    ⚠️ A tentativa anterior escrevia o nome completo na mesma linha e ele
+    SOBREPUNHA o texto vizinho (achado real 31/08: "user9945697717580
+    (Nilson Oliveira Do Nascimen̶t̶o̶)" saiu por cima do endereco). A causa:
+    `_limite_direito_real` so' olha obstaculos na MESMA faixa vertical da
+    linha, e o endereco fica na linha de baixo -- entao "cabia" pelo calculo
+    e atropelava na pratica. Limitar a dois nomes reduz drasticamente o
+    risco, e a checagem de espaco continua valendo.
+    """
+    import fitz
+
+    achados = pagina.search_for(impresso)
+    if not achados:
+        return 0
+
+    caixa = achados[0]
+    escritos = 0
+    partes = civil.split()
+
+    # --- 1) dois primeiros nomes, ao lado do nick ---------------------- #
+    curto = " ".join(partes[:2])
+    limite = cnr._limite_direito_real(pagina, caixa.y0, caixa.y1, caixa.x1)
+    texto = cnr.encurtar_para_caber(curto, caixa.x1, limite, "hebo", 8.3)
+    if texto:
+        pagina.insert_text(fitz.Point(caixa.x1, caixa.y1), texto,
+                           fontsize=8.3, fontname="hebo", color=(0, 0, 0),
+                           overlay=True)
+        escritos += 1
+
+    # --- 2) nome completo, abaixo do endereco -------------------------- #
+    # So' quando ha' mais que os dois nomes ja' escritos -- senao seria
+    # repetir a mesma informacao duas vezes na mesma etiqueta.
+    if len(partes) > 2:
+        pos = cnr._linha_livre_abaixo(pagina, caixa)
+        if pos is not None:
+            y2, limite2 = pos
+            completo = cnr.encurtar_para_caber(civil, caixa.x0, limite2,
+                                               "hebo", 7.5)
+            if completo:
+                pagina.insert_text(fitz.Point(caixa.x0, y2),
+                                   completo.strip(), fontsize=7.5,
+                                   fontname="hebo", color=(0, 0, 0),
+                                   overlay=True)
+                escritos += 1
+
+    return escritos
+
+
 def gerar(*, com_cartao: bool = False,
           nome_real: bool = True,
           somente: set[str] | None = None,
@@ -207,7 +272,9 @@ def gerar(*, com_cartao: bool = False,
     import fitz
 
     import core_etiqueta_normalizar as norm
+    import core_etiqueta_nome_real as cnr
     import core_etiquetas_todas as todas
+    import core_nome_civil_nfe as nfe
 
     inicio = time.time()
 
@@ -308,14 +375,32 @@ def gerar(*, com_cartao: bool = False,
     nomes_corrigidos = 0
 
     # 5. Nome civil ao lado do apelido
+    #
+    # ⚠️ A API do TikTok parou de devolver `cpf_name` (medido 01/09/2026:
+    # /order/202309/orders responde `code: 0 Success` mas o pedido vem so'
+    # com {"has_updated_recipient_address": false, "packages": []}). Como
+    # mapa vazio era tratado como "nenhum apelido a corrigir", a etiqueta
+    # saia com o nick sem avisar ninguem -- o Jota so' percebeu no papel.
+    #
+    # A NF-e passa a ser a fonte primaria: traz o nome como consta no CPF,
+    # que e' exatamente o criterio que os Correios usam para entregar. A API
+    # fica como reserva, para o caso de voltar a responder.
     mapa_pedido_civil = {}
     if nome_real:
         try:
-            import core_etiqueta_nome_real as cnr
-            ids_tt = [str(o) for o in mapa_tt.values()]
-            mapa_pedido_civil = cnr.mapa_por_pedido_tiktok(ids_tt) or {}
+            mapa_pedido_civil = nfe.mapa_por_pedido() or {}
+            log.info("Nomes civis da NF-e: %d pedido(s)", len(mapa_pedido_civil))
         except Exception as exc:
-            log.warning("Mapa de nomes civis indisponivel: %s", exc)
+            log.warning("Nomes civis via NF-e indisponiveis: %s", exc)
+
+        if not mapa_pedido_civil:
+            try:
+                ids_tt = [str(o) for o in mapa_tt.values()]
+                mapa_pedido_civil = cnr.mapa_por_pedido_tiktok(ids_tt) or {}
+                log.info("Nomes civis da API TikTok: %d pedido(s)",
+                         len(mapa_pedido_civil))
+            except Exception as exc:
+                log.warning("Mapa de nomes civis indisponivel: %s", exc)
 
     # Ordem NORMAL #1..#N. A inversão física testada em 30/08 foi revertida
     # a pedido do Jota (31/08) — segue a ordem natural da esteira.
@@ -334,34 +419,31 @@ def gerar(*, com_cartao: bool = False,
                     area_util = fitz.Rect(0, 0, largura, altura - FAIXA_NUMERO_PT)
                     nova_pag.show_pdf_page(area_util, parcial, pno)
 
-                    # Nome civil se aplicavel (TikTok)
-                    par_nome = mapa_pedido_civil.get(str(numero_pedido))
-                    if par_nome:
+                    # Nome civil ao lado do apelido.
+                    #
+                    # O nome IMPRESSO vem da propria etiqueta, lido por
+                    # posicao (`nome_impresso_na_pagina`), porque a API do
+                    # TikTok nao devolve mais `recipient_address`. O nome
+                    # CIVIL vem da NF-e, que e' o nome como consta no CPF.
+                    #
+                    # Regra do Jota (01/09): "ao lado do nick coloca os 2
+                    # primeiros nomes sempre limitando caracter, se ele
+                    # possuir mais q isso de nome ai vc replica o nome
+                    # completo abaixo do endereco". Assim a linha do
+                    # destinatario nao estoura (foi o que sobrepos texto na
+                    # tentativa anterior) e o nome completo continua na
+                    # etiqueta, atendendo ao lado legal.
+                    dados_nfe = mapa_pedido_civil.get(str(numero_pedido))
+                    if dados_nfe:
                         try:
-                            impresso, civil = par_nome
-                            achados = nova_pag.search_for(impresso)
-                            if achados:
-                                caixa = achados[0]
-                                # Limite REAL (desconta coluna de codigo de
-                                # barras J&T), nao a largura da pagina inteira
-                                # — ver core_etiqueta_nome_real.py (30/08/2026).
-                                limite = cnr._limite_direito_real(
-                                    nova_pag, caixa.y0, caixa.y1, caixa.x1)
-                                texto = cnr.encurtar_para_caber(civil, caixa.x1, limite, "hebo", 8.3)
-                                if texto:
-                                    nova_pag.insert_text(fitz.Point(caixa.x1, caixa.y1), texto, fontsize=8.3, fontname="hebo", color=(0, 0, 0), overlay=True)
-                                    nomes_corrigidos += 1
-                                else:
-                                    pos = cnr._linha_livre_abaixo(nova_pag, caixa)
-                                    if pos is not None:
-                                        y2, limite2 = pos
-                                        texto2 = cnr.encurtar_para_caber(civil, caixa.x0, limite2, "hebo", 8.3)
-                                        if texto2:
-                                            texto2 = texto2.strip()
-                                            nova_pag.insert_text(fitz.Point(caixa.x0, y2), texto2, fontsize=8.3, fontname="hebo", color=(0, 0, 0), overlay=True)
-                                            nomes_corrigidos += 1
-                        except Exception:
-                            pass
+                            _, civil = dados_nfe
+                            impresso = nfe.nome_impresso_na_pagina(nova_pag)
+                            if impresso and cnr.e_apelido(impresso, civil):
+                                nomes_corrigidos += _escrever_nome_civil(
+                                    nova_pag, impresso, civil, cnr)
+                        except Exception as exc:
+                            log.debug("Nome civil do pedido %s: %s",
+                                      numero_pedido, exc)
 
                     # Carimbo #N  #m (Posição na Esteira + Número Sequencial Olist)
                     num_olist = mapa_olist.get(str(numero_pedido))

@@ -186,6 +186,53 @@ def mapa_por_pedido(
     return saida
 
 
+def nome_impresso_na_pagina(pagina) -> str:
+    """O nome do destinatario como esta' escrito na etiqueta.
+
+    A API do TikTok nao devolve mais `recipient_address`, entao o unico lugar
+    onde o nome IMPRESSO existe e' a propria etiqueta -- e ele e' necessario
+    para (a) saber se e' apelido e (b) achar onde escrever o nome civil.
+
+    Localiza pela POSICAO, nao pela ordem do texto: medido em etiqueta J&T
+    real (01/09/2026), `get_text()` devolve os blocos fora de ordem de
+    leitura -- o numero do pedido aparece entre "DESTINATÁRIO" e o nome, e o
+    nome do comprador chega a sair depois de "REMETENTE:". Ler sequencial
+    pega o campo errado.
+
+    A regra que se sustenta: o nome e' a primeira linha de texto ABAIXO do
+    rotulo "DESTINATÁRIO", alinhada a` margem esquerda do bloco.
+    """
+    try:
+        spans = []
+        for bloco in pagina.get_text("dict")["blocks"]:
+            for linha in bloco.get("lines", []):
+                for trecho in linha.get("spans", []):
+                    texto = (trecho.get("text") or "").strip()
+                    if texto:
+                        spans.append((trecho["bbox"], texto))
+    except Exception:
+        return ""
+
+    rotulo = None
+    for bbox, texto in spans:
+        if "DESTINAT" in texto.upper():
+            rotulo = bbox
+            break
+    if rotulo is None:
+        return ""
+
+    # Primeiro texto abaixo do rotulo, comecando perto da mesma margem
+    # esquerda. A tolerancia de 12pt cobre o recuo do bloco de endereco.
+    candidatos = [
+        (bbox[1], texto) for bbox, texto in spans
+        if bbox[1] > rotulo[3] - 2 and abs(bbox[0] - rotulo[0]) < 12
+    ]
+    if not candidatos:
+        return ""
+    candidatos.sort()
+    return candidatos[0][1]
+
+
 def sku_do_pedido(pedido: str, pasta: str | Path | None = None) -> list[tuple[str, int]]:
     """[(sku, quantidade)] do pedido, direto da NF-e — para cruzamento."""
     d = indexar(pasta).get(str(pedido))

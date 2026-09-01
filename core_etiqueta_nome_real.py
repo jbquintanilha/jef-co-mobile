@@ -1,11 +1,11 @@
 # ==============================================================================
 # NOME DO SCRIPT: core_etiqueta_nome_real.py
-# DESCRICAO: Acrescenta o nome civil ao lado do apelido na etiqueta
+# DESCRICAO: Acrescenta o nome civil ao lado (ou abaixo) do apelido na etiqueta
 # FUNCAO: Quando o TikTok emite a etiqueta com o nick do comprador, escreve
-#         o nome real entre parenteses logo apos — sem apagar nada.
+#         o nome real entre parenteses — sem apagar nada.
 # STATUS: ATIVO
-# VERSAO: 1.0
-# DATA: 19/08/2026
+# VERSAO: 1.1
+# DATA: 19/08/2026 (v1.0) — 30/08/2026 (v1.1: 2a linha p/ etiqueta J&T/TikTok)
 # AUTOR: Terminador (001) / Claude
 # ==============================================================================
 """
@@ -36,6 +36,22 @@ identidades:
 O carteiro identifica a pessoa; quem so' conhece o comprador pelo nick ainda
 reconhece. E, como o nome civil vem do MESMO cadastro que tem o CPF usado na
 NF-e, a informacao acrescentada e' mais correta, nao menos.
+
+## Correcao 30/08/2026 — etiqueta J&T (TikTok) e' mais estreita que Correios
+
+`_cabe()` calculava contra a largura TOTAL da pagina menos uma margem fixa —
+mas na etiqueta J&T ha' um codigo de barras VERTICAL numa coluna lateral
+fixa (comeca em x≈241pt nessa etiqueta 100x150mm) que o calculo nao
+descontava. Resultado real (Jota, 30/08, pedido 999881879488251): "Siomara
+Felipetti (Siomara Aparecida Aurieme Felipeti)" foi considerado "cabe" mas
+visualmente atropelou o codigo de barras.
+
+Decisao do Jota: em vez de so' abreviar mais agressivo pra caber na mesma
+linha, o nome civil desce para uma 2a linha DENTRO da mesma caixa branca de
+destinatario, abaixo do endereco — ha' espaco vertical livre ali (a etiqueta
+Correios tem endereco mais curto que J&T, entao J&T tinha mais folga
+horizontal na v1.0; a v1.1 usa vertical em vez de tentar espremer na mesma
+linha). Ver `completar_nomes_segunda_linha()`.
 
 ## Quem e' nick e quem nao e'
 
@@ -101,6 +117,17 @@ def e_apelido(na_etiqueta: str, nome_civil: str) -> bool:
     civis = _tokens(nome_civil)
     if not impressos or not civis:
         return False
+
+    # ⚠️ LEI do Jota (01/09/2026): "necessario sempre ter no minimo 2
+    # nomes... 1 nome so' considere apelido".
+    #
+    # Um nome sozinho nao identifica ninguem para o carteiro, mesmo quando
+    # confere com o cadastro: "Aninha" casa dentro de "Ana Paula Souza" pela
+    # regra de subconjunto abaixo e passava batido, deixando a etiqueta so'
+    # com o primeiro nome. Exigir dois nomes vale tanto para nick declarado
+    # quanto para nome civil abreviado a uma palavra.
+    if len(impressos) < 2:
+        return len(civis) >= 2
 
     # Toda palavra impressa precisa existir no cadastro. Comparacao por
     # token, nao por substring: "Ana" nao pode casar dentro de "Joana".
@@ -173,10 +200,95 @@ def encurtar_para_caber(nome: str, x_inicio: float, largura_pagina: float,
     return None
 
 
+def _limite_direito_real(pagina, y0: float, y1: float,
+                          x_ignorar_ate: float) -> float:
+    """Onde a linha (y0..y1) PODE de fato escrever ate', sem invadir outro
+    conteudo da pagina (ex: coluna do codigo de barras).
+
+    `_cabe()` original so' olhava a largura da pagina inteira — em etiquetas
+    J&T/TikTok isso ignora que ha' um codigo de barras VERTICAL ocupando uma
+    faixa lateral fixa, deixando bem menos espaco real do que o calculo
+    assumia (achado real 30/08/2026, ver docstring do modulo).
+
+    Varre todo texto da pagina que comece depois de `x_ignorar_ate` (ou
+    seja, nao e' o proprio nome que estamos medindo) e que se sobreponha
+    verticalmente a` faixa (y0, y1); o limite e' o x0 do achado mais a`
+    esquerda entre eles. Sem nenhum achado, cai no rodape da pagina inteira.
+    """
+    limite = pagina.rect.width
+    for bloco in pagina.get_text("dict")["blocks"]:
+        for linha in bloco.get("lines", []):
+            for trecho in linha.get("spans", []):
+                bx0, by0, bx1, by1 = trecho["bbox"]
+                if bx0 <= x_ignorar_ate:
+                    continue  # o proprio texto do nome, ou algo a esquerda
+                sobrepoe_y = by0 < y1 and by1 > y0
+                if sobrepoe_y and bx0 < limite:
+                    limite = bx0
+    return limite
+
+
+def _linha_livre_abaixo(pagina, caixa_nome,
+                        folga_min: float = 8.0) -> tuple[float, float] | None:
+    """Acha uma 2a linha livre logo abaixo do nome/endereco, dentro da
+    mesma caixa de destinatario, sem colidir com o proximo bloco de
+    conteudo (ex: o numero grande do pedido, tipo "319111").
+
+    Junta todas as linhas de texto que comecam perto da margem esquerda
+    da caixa do nome (mesmo bloco de destinatario) para achar onde o
+    endereco termina verticalmente; devolve o `y` de base pra escrever
+    logo abaixo, e o `limite` horizontal disponivel ali. `None` se nao
+    houver folga vertical suficiente (`folga_min` em pontos) antes do
+    proximo elemento da pagina.
+    """
+    x_esq = caixa_nome.x0
+    y_topo_bloco = caixa_nome.y0
+
+    # Ultima linha do MESMO bloco de destinatario (endereco costuma vir
+    # logo abaixo do nome, alinhado a` mesma margem esquerda).
+    fim_bloco = caixa_nome.y1
+    for bloco in pagina.get_text("dict")["blocks"]:
+        for linha in bloco.get("lines", []):
+            for trecho in linha.get("spans", []):
+                bx0, by0, bx1, by1 = trecho["bbox"]
+                mesma_coluna = abs(bx0 - x_esq) < 3
+                logo_abaixo = by0 >= y_topo_bloco
+                if mesma_coluna and logo_abaixo:
+                    fim_bloco = max(fim_bloco, by1)
+
+    # Proximo elemento QUALQUER (mesma pagina) abaixo do fim do bloco —
+    # define ate' onde ha' espaco vertical livre antes de colidir.
+    proximo_y = pagina.rect.height
+    limite_h = pagina.rect.width
+    for bloco in pagina.get_text("dict")["blocks"]:
+        for linha in bloco.get("lines", []):
+            for trecho in linha.get("spans", []):
+                bx0, by0, bx1, by1 = trecho["bbox"]
+                if by0 > fim_bloco + 0.5:
+                    if by0 < proximo_y:
+                        proximo_y = by0
+                        limite_h = pagina.rect.width
+                    if by0 < proximo_y + 2 and bx0 < limite_h:
+                        limite_h = min(limite_h, pagina.rect.width)
+
+    linha_altura = 9.0  # aproximacao pro tamanho de fonte tipico (8-8.3pt)
+    if (proximo_y - fim_bloco) < (linha_altura + folga_min):
+        return None
+
+    y_escrita = fim_bloco + linha_altura
+    return (y_escrita, limite_h - 4.0)  # 4pt de folga na direita
+
+
 def completar_nomes(pdf: str | Path,
                     mapa: dict[str, str],
                     saida: str | Path | None = None) -> dict[str, Any]:
     """Escreve "(Nome Civil)" apos o apelido, em cada pagina que casar.
+
+    Tenta primeiro a mesma linha (ao lado do nick). Se o espaco real ate' o
+    proximo conteudo da pagina (ex: coluna do codigo de barras em etiquetas
+    J&T) nao comportar nem a forma mais abreviada, cai para uma 2a linha
+    logo abaixo do endereco, dentro da mesma caixa de destinatario — ver
+    `_linha_livre_abaixo()`.
 
     Args:
         pdf: etiquetas ja' normalizadas.
@@ -185,7 +297,7 @@ def completar_nomes(pdf: str | Path,
         saida: destino; `None` sobrescreve.
 
     Retorna:
-        {"paginas", "corrigidas", "nao_coube", "detalhe"}
+        {"paginas", "corrigidas", "corrigidas_2a_linha", "nao_coube", "detalhe"}
     """
     import fitz
 
@@ -196,9 +308,11 @@ def completar_nomes(pdf: str | Path,
     alvos = {imp: civ for imp, civ in mapa.items() if e_apelido(imp, civ)}
     if not alvos:
         doc.close()
-        return {"paginas": 0, "corrigidas": 0, "nao_coube": 0, "detalhe": []}
+        return {"paginas": 0, "corrigidas": 0, "corrigidas_2a_linha": 0,
+                "nao_coube": 0, "detalhe": []}
 
     corrigidas = 0
+    corrigidas_2a_linha = 0
     nao_coube = 0
     detalhe: list[str] = []
 
@@ -228,19 +342,42 @@ def completar_nomes(pdf: str | Path,
             x = caixa.x1          # logo apos o nome impresso
             y = caixa.y1          # mesma linha de base
 
+            # Limite real ate' onde da' pra escrever nessa linha (desconta
+            # coluna de codigo de barras ou qualquer outro conteudo).
+            limite = _limite_direito_real(pagina, caixa.y0, caixa.y1, caixa.x1)
+
             # Abrevia os nomes do MEIO ate' caber, preservando primeiro e
-            # ultimo. `None` = nem a forma mais curta cabe.
-            texto = encurtar_para_caber(civil, x, pagina.rect.width,
-                                        fonte, tamanho)
-            if texto is None:
-                nao_coube += 1
-                detalhe.append(f"{impresso}: nao coube na linha")
+            # ultimo. `None` = nem a forma mais curta cabe no espaco real.
+            texto = encurtar_para_caber(civil, x, limite, fonte, tamanho)
+
+            if texto is not None:
+                pagina.insert_text(fitz.Point(x, y), texto, fontsize=tamanho,
+                                   fontname=fonte, color=(0, 0, 0),
+                                   overlay=True)
+                corrigidas += 1
+                detalhe.append(f"{impresso} -> {impresso}{texto}")
                 continue
 
-            pagina.insert_text(fitz.Point(x, y), texto, fontsize=tamanho,
-                               fontname=fonte, color=(0, 0, 0), overlay=True)
-            corrigidas += 1
-            detalhe.append(f"{impresso} -> {impresso}{texto}")
+            # Nao coube na mesma linha (etiqueta estreita, ex: J&T/TikTok) —
+            # tenta uma 2a linha logo abaixo do endereco, dentro da mesma
+            # caixa de destinatario.
+            pos = _linha_livre_abaixo(pagina, caixa)
+            if pos is not None:
+                y2, limite2 = pos
+                texto2 = encurtar_para_caber(
+                    civil, caixa.x0, limite2, fonte, tamanho)
+                if texto2 is not None:
+                    texto2 = texto2.strip()  # sem o espaco inicial de "(...)"
+                    pagina.insert_text(
+                        fitz.Point(caixa.x0, y2), texto2, fontsize=tamanho,
+                        fontname=fonte, color=(0, 0, 0), overlay=True)
+                    corrigidas_2a_linha += 1
+                    detalhe.append(
+                        f"{impresso} -> 2a linha: {texto2}")
+                    continue
+
+            nao_coube += 1
+            detalhe.append(f"{impresso}: nao coube nem na 2a linha")
 
     destino = Path(saida) if saida else pdf
     if destino == pdf:
