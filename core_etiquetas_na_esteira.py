@@ -317,6 +317,8 @@ def gerar(*, com_cartao: bool = False,
         except Exception as exc:
             log.warning("Mapa de nomes civis indisponivel: %s", exc)
 
+    # Ordem NORMAL #1..#N. A inversão física testada em 30/08 foi revertida
+    # a pedido do Jota (31/08) — segue a ordem natural da esteira.
     for ordem_idx, (caminho, numero_pedido) in enumerate(arquivos, start=1):
         if not Path(caminho).exists():
             continue
@@ -340,10 +342,24 @@ def gerar(*, com_cartao: bool = False,
                             achados = nova_pag.search_for(impresso)
                             if achados:
                                 caixa = achados[0]
-                                texto = cnr.encurtar_para_caber(civil, caixa.x1, nova_pag.rect.width, "hebo", 8.3)
+                                # Limite REAL (desconta coluna de codigo de
+                                # barras J&T), nao a largura da pagina inteira
+                                # — ver core_etiqueta_nome_real.py (30/08/2026).
+                                limite = cnr._limite_direito_real(
+                                    nova_pag, caixa.y0, caixa.y1, caixa.x1)
+                                texto = cnr.encurtar_para_caber(civil, caixa.x1, limite, "hebo", 8.3)
                                 if texto:
                                     nova_pag.insert_text(fitz.Point(caixa.x1, caixa.y1), texto, fontsize=8.3, fontname="hebo", color=(0, 0, 0), overlay=True)
                                     nomes_corrigidos += 1
+                                else:
+                                    pos = cnr._linha_livre_abaixo(nova_pag, caixa)
+                                    if pos is not None:
+                                        y2, limite2 = pos
+                                        texto2 = cnr.encurtar_para_caber(civil, caixa.x0, limite2, "hebo", 8.3)
+                                        if texto2:
+                                            texto2 = texto2.strip()
+                                            nova_pag.insert_text(fitz.Point(caixa.x0, y2), texto2, fontsize=8.3, fontname="hebo", color=(0, 0, 0), overlay=True)
+                                            nomes_corrigidos += 1
                         except Exception:
                             pass
 
@@ -384,6 +400,32 @@ def gerar(*, com_cartao: bool = False,
     doc_final.save(destino)
     doc_final.close()
 
+    # 6.5 Blinda o PDF para a impressora termica generica.
+    # A etiqueta CRUA do canal imprime bem; a nossa, montada, falhava (Jota,
+    # 31/08). Diferenca medida: nos acrescentamos Helvetica/Helvetica-Bold
+    # Type1 NAO embutidas (carimbo #N e SKU) e o cartao traz 9 fontes sem
+    # nome, tambem nao embutidas. Termica barata nao tem catalogo de fonte:
+    # substituir falha e ela pula/aborta a pagina. Rasterizando em 1-bit nao
+    # sobra fonte, alpha nem vetor — so' bitmap, que todo firmware aceita.
+    #
+    # ⚠️ A falha aqui NAO pode ser silenciosa (achado 01/09/2026): faltava
+    # `numpy` no requirements-deploy.txt, a blindagem estourava ImportError
+    # na nuvem e este except engolia — o Jota baixou um PDF sem blindagem
+    # acreditando que era o corrigido. O erro agora sobe em `erros`, que a
+    # tela ja' mostra.
+    erro_blindagem = None
+    try:
+        import core_etiqueta_termica as termica
+        r_term = termica.blindar_para_termica(destino)
+        log.info("PDF blindado para termica: %s MB", r_term.get("mb"))
+    except Exception as exc:      # PDF normal ainda serve — nunca derrubar o lote
+        log.warning("Blindagem para termica falhou: %s", exc)
+        erro_blindagem = (
+            f"⚠️ PDF gerado SEM blindagem para térmica ({exc}). "
+            "Ele deve imprimir, mas se a impressora falhar/pular página, "
+            "é este o motivo."
+        )
+
     # 7. Limpa os PDFs por canal que o `baixar_tudo` deixou na pasta.
     # Sem isto cada clique enche o Downloads com 4-6 arquivos e o operador
     # perde qual e' o bom (Jota, 19/08: "baixou varias versoes na pasta").
@@ -423,7 +465,8 @@ def gerar(*, com_cartao: bool = False,
         "fora_da_esteira": fora,
         "nomes_corrigidos": nomes_corrigidos,
         "por_canal": baixado.get("por_canal"),
-        "erros": baixado.get("erros") or [],
+        "erros": (baixado.get("erros") or [])
+                 + ([erro_blindagem] if erro_blindagem else []),
         "segundos": segundos,
         "resumo": resumo,
     }

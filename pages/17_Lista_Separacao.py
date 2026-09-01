@@ -335,8 +335,13 @@ def _filtro_onda() -> set[str] | None:
     n = st.session_state.get("onda_travada")
     if n is None:
         return None
-    import core_ondas_expedicao as ondas
-    return ondas.pedidos_da_onda(n)
+    import core_ondas_supabase as ondas
+    try:
+        return ondas.pedidos_do_slot(n)
+    except Exception:
+        # Supabase fora: melhor mostrar tudo do que esconder a fila inteira
+        # e o operador achar que nao ha' pedido nenhum.
+        return None
 
 
 def _so_da_onda(pedidos: list, filtro: set[str] | None) -> list:
@@ -375,12 +380,12 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
     if not _dados_onda or not isinstance(_dados_onda, dict):
         st.caption(
             "🌊 Sincronize a fila (botão abaixo) para ver as ondas já "
-            "processadas e marcar até onde você já imprimiu."
+            "processadas e organizar os pedidos em slots."
         )
         return [], [], []
 
     try:
-        import core_ondas_expedicao as ondas
+        import core_ondas_supabase as ondas
     except Exception as err:
         st.warning(f"Aviso ao carregar módulo de ondas: {err}")
         return [], [], []
@@ -390,65 +395,100 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
         + _dados_onda.get("pedidos_simples_multi_un", [])
         + _dados_onda.get("pedidos_multi_itens", [])
     )
-    # A marca vale ate' o pedido sair do Olist: quem nao esta' mais na
-    # fila pendente e' descartado do banco de ondas.
+
+    # ⚠️ `limpar_despachados` NAO roda aqui de proposito. A versao antiga
+    # (`limpar_ausentes`) rodava a cada render e apagava tudo que nao
+    # estivesse na lista recebida — com sincronizacao parcial, varria a onda
+    # inteira em silencio. Era a causa nº 1 do "as vezes esta, as vezes nao".
+    # A limpeza agora e' um botao explicito, mais abaixo.
     try:
-        ondas.limpar_ausentes({str(p.get("numero_ecommerce") or "").upper()
-                               for p in _todos})
         ondas.marcar(_todos)
-    except Exception:
-        pass
+    except Exception as err:
+        st.warning(f"Ondas indisponíveis: {err}")
 
     _pend = [p for p in _todos if not p.get("onda")]
     _feitos = [p for p in _todos if p.get("onda")]
 
-    # ---------------- Seletor de onda (trava a esteira) ---------------- #
-    try:
-        _lista = ondas.listar_ondas() if hasattr(ondas, "listar_ondas") else []
-    except Exception:
-        _lista = []
+    st.markdown("#### 🌊 Ondas de expedição")
 
-    _opcoes = [None] + [o.get("onda") for o in _lista if isinstance(o, dict) and "onda" in o]
-    _por_num = {o["onda"]: o for o in _lista if isinstance(o, dict) and "onda" in o}
+    # ---- Atualizar a fila sem F5 ----------------------------------------- #
+    # Jota (01/09): "as vezes estou no meio e surge pedido... assim consigo
+    # atualizar e incluir eles na onda sem dar um F5 q apaga varias coisas".
+    # F5 recarrega a pagina inteira e zera o session_state (fase atual,
+    # bipagem, selecoes). Este botao so' re-busca a fila e mantem o resto.
+    _c_at1, _c_at2 = st.columns([3, 1])
+    with _c_at1:
+        st.caption(
+            f"⏳ **{len(_pend)} a processar** · ✅ {len(_feitos)} já em onda"
+        )
+    with _c_at2:
+        if st.button("🔄 Atualizar fila", use_container_width=True,
+                     key=f"btn_refresh_fila_{chave}",
+                     help="Busca pedidos novos SEM recarregar a página "
+                          "(não perde a fase atual nem o que já foi bipado)."):
+            # `reset=False` de proposito: re-busca a fila mas preserva o
+            # session_state (fase atual, bipagem, seleções) — que e'
+            # justamente o que o F5 destruia.
+            atualizar_separacao(reset=False)
+            st.rerun()
+
+    try:
+        _slots = ondas.listar_slots()
+    except Exception as err:
+        st.error(f"Não foi possível ler as ondas: {err}")
+        return _pend, _pend, _feitos
+
+    _por_slot = {s["slot"]: s for s in _slots}
 
     def _rotulo(n):
         if n is None:
             return f"🔓 Fila livre — {len(_pend)} pendente(s)"
-        o = _por_num.get(n, {})
-        marca = "✅" if o.get("concluida") else "🔵"
-        return (f"{marca} Onda {n} · {o.get('pedidos', 0)} pedidos · "
-                f"{o.get('total_fases', 0)}/7 fases")
+        s = _por_slot.get(n, {})
+        if s.get("vazio"):
+            return f"⚪ Onda {n} — vazia"
+        marca = "✅" if s.get("concluida") else "🔵"
+        nome = f" · {s['rotulo']}" if s.get("rotulo") else ""
+        return (f"{marca} Onda {n}{nome} · {s.get('pedidos', 0)} pedidos · "
+                f"{s.get('total_fases', 0)}/7 fases")
 
-    st.markdown("#### 🌊 Ondas de expedição")
-
+    # ⚠️ `key` SEM o sufixo da fase (era `onda_travada_{chave}`): com uma key
+    # por fase, cada tela tinha seu proprio seletor e a escolha nao seguia o
+    # operador entre as fases (Jota, 31/08: "a selecao de onda deve ser unica
+    # e persistir nas demais paginas").
     _travada = st.selectbox(
-        "Onda de trabalho", options=_opcoes, format_func=_rotulo,
-        key=f"onda_travada_{chave}",
-        help="Ao escolher uma onda, TODAS as fases passam a trabalhar só "
-             "com os pedidos dela. Escolha 'Fila livre' para voltar ao "
-             "fluxo normal.",
+        "Onda de trabalho", options=[None] + ondas.SLOTS,
+        format_func=_rotulo, key="onda_travada",
+        help="5 ondas fixas. Escolha uma para travar a esteira nela, ou "
+             "'Fila livre' para ver tudo que ainda não entrou em onda.",
     )
-    st.session_state["onda_travada"] = _travada
 
+    # ---------------- Onda travada: a esteira opera só nela --------------- #
     if _travada is not None:
+        _info = _por_slot.get(_travada, {})
         try:
-            _num_onda = ondas.pedidos_da_onda(_travada)
+            _num_onda = ondas.pedidos_do_slot(_travada)
         except Exception:
             _num_onda = set()
-        _alvo = [p for p in _todos if str(p.get("numero_ecommerce") or "").upper()
-                 in _num_onda]
+        _alvo = [p for p in _todos
+                 if str(p.get("numero_ecommerce") or "").upper() in _num_onda]
         try:
-            _feitas = ondas.fases_da_onda(_travada)
+            _feitas = ondas.fases_do_slot(_travada)
         except Exception:
             _feitas = {}
         _nomes_ok = [FASES[i] for i in sorted(_feitas) if _feitas[i]]
-        st.success(
-            f"🔒 **Onda {_travada} travada** — {len(_alvo)} pedido(s). "
-            "As 7 fases estão operando só sobre ela."
-            + (f"\n\nJá concluído: {' · '.join(_nomes_ok)}" if _nomes_ok else "")
-        )
-        # Marca a fase corrente como feita — e' o que permite retomar a onda
-        # depois sem perder de vista o que ja' passou.
+
+        if _info.get("vazio"):
+            st.info(
+                f"⚪ **Onda {_travada} está vazia.** Volte para 'Fila livre', "
+                "selecione os pedidos e salve nesta onda."
+            )
+        else:
+            st.success(
+                f"🔒 **Onda {_travada} travada** — {len(_alvo)} pedido(s). "
+                "As 7 fases estão operando só sobre ela."
+                + (f"\n\nJá concluído: {' · '.join(_nomes_ok)}" if _nomes_ok else "")
+            )
+
         _fase_ix = st.session_state.get("fase_atual", 0)
         _ja_feita = bool(_feitas.get(_fase_ix))
         c_f1, c_f2, c_f3 = st.columns(3)
@@ -457,14 +497,16 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                     ("↩️ Desmarcar esta fase" if _ja_feita
                      else f"✅ Concluir '{FASES[_fase_ix].split(' ', 1)[-1]}'"),
                     key=f"btn_fase_ok_{chave}", use_container_width=True,
+                    disabled=_info.get("vazio", False),
                     type="secondary" if _ja_feita else "primary"):
                 ondas.marcar_fase(_travada, _fase_ix, not _ja_feita)
                 st.rerun()
         with c_f2:
             if st.button("🏁 Concluir onda inteira", key=f"btn_onda_fim_{chave}",
                          use_container_width=True,
+                         disabled=_info.get("vazio", False),
                          help="Marca as 7 fases de uma vez."):
-                ondas.concluir(_travada)
+                ondas.concluir_slot(_travada)
                 st.rerun()
         with c_f3:
             if st.button("🔄 Reabrir onda", key=f"btn_onda_reabrir_{chave}",
@@ -472,88 +514,85 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                          help="Zera o progresso das fases. Os pedidos "
                               "continuam na onda.",
                          disabled=not _nomes_ok):
-                ondas.reabrir(_travada)
+                ondas.reabrir_slot(_travada)
                 st.rerun()
+
+        # Gerenciar o slot: renomear e esvaziar
+        with st.expander(f"⚙️ Gerenciar onda {_travada}"):
+            _nome = st.text_input(
+                "Nome desta onda (opcional)",
+                value=_info.get("rotulo", ""),
+                key=f"rot_onda_{_travada}_{chave}",
+                placeholder="ex: manhã, correios 14h, retirada")
+            cg1, cg2 = st.columns(2)
+            with cg1:
+                if st.button("💾 Salvar nome", use_container_width=True,
+                             key=f"btn_rot_{chave}"):
+                    ondas.renomear_slot(_travada, _nome)
+                    st.rerun()
+            with cg2:
+                # Zerar apaga trabalho — exige confirmacao explicita, nunca
+                # um clique so'.
+                _conf = st.checkbox(
+                    f"Confirmo esvaziar a onda {_travada}",
+                    key=f"conf_zerar_{_travada}_{chave}")
+                if st.button("🗑️ Esvaziar esta onda", use_container_width=True,
+                             key=f"btn_zerar_{chave}", type="secondary",
+                             disabled=not _conf or _info.get("vazio", False)):
+                    r_z = ondas.zerar_slot(_travada)
+                    st.warning(f"Onda {_travada} esvaziada — "
+                               f"{r_z['removidos']} pedido(s) voltaram "
+                               "para a fila livre.")
+                    st.rerun()
+
         st.divider()
         return _alvo, _pend, _feitos
 
-    # ---------------- Fila livre (comportamento de sempre) ---------------- #
-    c_o1, c_o2, c_o3 = st.columns([2, 1, 1])
-    with c_o1:
-        _res = ondas.resumo()
-        if _res:
-            st.caption("Hoje: " + " · ".join(
-                f"**onda {r['onda']}** {r['pedidos']} ped" for r in _res))
-        st.caption(
-            f"⏳ **{len(_pend)} a processar** · ✅ {len(_feitos)} já em onda"
-        )
-    with c_o2:
-        if st.button(f"💾 Salvar onda {ondas.proxima_onda()}",
-                     type="primary", use_container_width=True,
-                     key=f"btn_salvar_onda_{chave}",
-                     help="Marca os pendentes como processados. Eles "
-                          "continuam visíveis, com o número da onda.",
-                     disabled=not _pend):
-            r_o = ondas.salvar_onda(_pend)
-            st.success(f"✅ Onda {r_o['onda']} salva — "
-                       f"{r_o['gravados']} pedido(s).")
-            st.rerun()
-    with c_o3:
-        if st.button("↩️ Desfazer última", use_container_width=True,
-                     key=f"btn_desfazer_onda_{chave}", disabled=not _res):
-            r_d = ondas.desfazer_ultima()
-            if r_d["removidos"]:
-                st.info(f"Onda {r_d['onda']} desfeita — "
-                        f"{r_d['removidos']} pedido(s) voltaram.")
-            st.rerun()
+    # ---------------- Fila livre: montar/alimentar uma onda --------------- #
+    st.caption("**As 5 ondas** — escolha acima para travar a esteira numa delas.")
+    _cols = st.columns(5)
+    for _i, _s in enumerate(_slots):
+        with _cols[_i]:
+            if _s["vazio"]:
+                st.caption(f"⚪ **{_s['slot']}**\n\nvazia")
+            else:
+                _m = "✅" if _s["concluida"] else "🔵"
+                _r = f"\n\n_{_s['rotulo']}_" if _s["rotulo"] else ""
+                st.caption(f"{_m} **{_s['slot']}**\n\n{_s['pedidos']} ped · "
+                           f"{_s['total_fases']}/7{_r}")
 
-    # Onda impressa ANTES deste mecanismo (ou fora do sistema): o
-    # operador olha a última etiqueta da pilha e informa o número.
-    with st.expander("📌 Já imprimi antes — informar o último pedido processado",
-                      expanded=(chave == "f1" and bool(_pend))):
-        st.caption(
-            "Olhe a **última etiqueta da pilha** que você já imprimiu e "
-            "veja o `#` do Olist. Tudo até ele entra numa onda; o resto "
-            "fica pendente."
-        )
-        _nums = sorted(
-            int(str(p.get("numero_olist")).lstrip("#"))
-            for p in _todos
-            if str(p.get("numero_olist") or "").strip().lstrip("#").isdigit()
-        )
-        if _nums:
-            st.caption(f"Nesta fila: **#{_nums[0]}** até **#{_nums[-1]}**")
-        c_u1, c_u2 = st.columns([2, 1])
-        with c_u1:
-            _ult = st.number_input(
-                "Último pedido JÁ processado (nº Olist)",
-                min_value=0, step=1,
-                value=int(_nums[0]) if _nums else 0,
-                key=f"num_ultimo_processado_{chave}")
-        with c_u2:
-            st.write("")
-            if st.button("💾 Marcar até aqui", use_container_width=True,
-                         key=f"btn_onda_ate_{chave}", disabled=not _ult):
-                r_a = ondas.salvar_ate_pedido(_todos, _ult)
-                if r_a.get("erro"):
-                    st.error(r_a["erro"])
-                else:
-                    st.success(
-                        f"✅ Onda {r_a['onda']}: {r_a['gravados']} pedido(s) "
-                        f"até **#{r_a['limite']}** marcados como processados."
-                    )
-                    st.rerun()
-
-    # Montar onda escolhendo (em vez de levar tudo que esta' pendente).
-    # Pedido do Jota (27/08): "selecionando tudo, porem gere a possibilidade
-    # de escolher e filtros por plataforma".
-    if _pend:
-        with st.expander("🎯 Montar onda escolhendo os pedidos"):
+    if not _pend:
+        st.info("Nenhum pedido pendente — tudo já está em alguma onda.")
+    else:
+        with st.expander(f"➕ Colocar pedidos numa onda ({len(_pend)} pendente(s))",
+                          expanded=(chave == "f1")):
             _canais = sorted({str(p.get("canal") or "?") for p in _pend})
             _fil = st.multiselect(
                 "Filtrar por plataforma", options=_canais, default=_canais,
                 key=f"filtro_canal_onda_{chave}")
             _cand = [p for p in _pend if str(p.get("canal") or "?") in _fil]
+
+            cA, cB = st.columns([1, 1])
+            with cA:
+                _destino = st.selectbox(
+                    "Colocar na onda", options=ondas.SLOTS,
+                    format_func=lambda n: _rotulo(n),
+                    key=f"slot_destino_{chave}")
+            with cB:
+                # Slot ocupado: o operador decide somar ou substituir. A tela
+                # NUNCA escolhe sozinha (decisao do Jota, 31/08).
+                _ocupado = not _por_slot.get(_destino, {}).get("vazio", True)
+                _modo = st.radio(
+                    "Se a onda já tiver pedidos",
+                    options=["somar", "substituir"],
+                    format_func=lambda m: ("➕ Acrescentar aos que já estão"
+                                           if m == "somar"
+                                           else "♻️ Substituir o conteúdo"),
+                    horizontal=False, key=f"modo_slot_{chave}",
+                    disabled=not _ocupado,
+                    help=("A onda está vazia — nada a decidir."
+                          if not _ocupado else None))
+
             st.caption(f"{len(_cand)} pedido(s) no filtro. "
                        "Desmarque os que NÃO entram nesta onda.")
 
@@ -566,17 +605,96 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                 if st.checkbox(rot, value=True, key=f"sel_{chave}_{n}"):
                     _escolhidos.append(n)
 
-            if st.button(f"💾 Criar onda {ondas.proxima_onda()} com "
-                         f"{len(_escolhidos)} pedido(s)",
+            if st.button(f"💾 Salvar {len(_escolhidos)} pedido(s) na onda {_destino}",
                          key=f"btn_onda_sel_{chave}", type="primary",
                          disabled=not _escolhidos, use_container_width=True):
-                r_s = ondas.salvar_onda_selecionada(_todos, set(_escolhidos))
-                st.success(f"✅ Onda {r_s['onda']} criada — "
-                           f"{r_s['gravados']} pedido(s).")
+                _alvo_ped = [p for p in _todos
+                             if str(p.get("numero_ecommerce") or "") in _escolhidos]
+                r_s = ondas.salvar_slot(_destino, _alvo_ped,
+                                        modo=_modo if _ocupado else "somar")
+                st.success(f"✅ Onda {r_s['slot']}: {r_s['gravados']} pedido(s).")
+                # Pedido movido de outra onda precisa ser VISIVEL — senao
+                # parece que sumiu da onda antiga sem explicacao.
+                if r_s.get("movidos"):
+                    st.warning(
+                        "Movidos de outra onda: " + ", ".join(
+                            f"`{m['numero_ecommerce']}` (onda {m['de']} → "
+                            f"{m['para']})" for m in r_s["movidos"]))
+                st.rerun()
+
+    # Onda impressa ANTES deste mecanismo (ou fora do sistema).
+    with st.expander("📌 Já imprimi antes — informar o último pedido processado"):
+        st.caption(
+            "Olhe a **última etiqueta da pilha** que você já imprimiu e "
+            "veja o `#` do Olist. Tudo até ele entra na onda escolhida."
+        )
+        _nums = sorted(
+            int(str(p.get("numero_olist")).lstrip("#"))
+            for p in _todos
+            if str(p.get("numero_olist") or "").strip().lstrip("#").isdigit()
+        )
+        if _nums:
+            st.caption(f"Nesta fila: **#{_nums[0]}** até **#{_nums[-1]}**")
+
+        c_u1, c_u2, c_u3 = st.columns([2, 1, 1])
+        with c_u1:
+            # ⚠️ Default = ULTIMO da fila, nao o primeiro. Antes vinha
+            # `_nums[0]` (o MENOR numero), que e' o primeiro pedido
+            # disponivel — nunca o ultimo processado (Jota, 31/08: "esse e'
+            # o primeiro pedido na lista geral dos disponiveis pra despachar,
+            # o ultimo processado nunca aparece ali").
+            _ult = st.number_input(
+                "Último pedido JÁ processado (nº Olist)",
+                min_value=0, step=1,
+                value=int(_nums[-1]) if _nums else 0,
+                key=f"num_ultimo_processado_{chave}")
+        with c_u2:
+            _slot_ate = st.selectbox("Na onda", options=ondas.SLOTS,
+                                      key=f"slot_ate_{chave}")
+        with c_u3:
+            st.write("")
+            _marcar_ate = st.button("💾 Marcar até aqui", use_container_width=True,
+                                    key=f"btn_onda_ate_{chave}", disabled=not _ult)
+
+        # Pre-visualizacao ANTES de gravar: numeracao sequencial nao e' sinal
+        # de verdade (pedido antigo pode entrar na fila depois, se o pagamento
+        # demorou), entao o operador precisa VER quem seria varrido junto.
+        if _ult:
+            def _n_olist(p):
+                try:
+                    return int(str(p.get("numero_olist") or 0).lstrip("#"))
+                except (TypeError, ValueError):
+                    return 0
+            _atingidos = [p for p in _pend if 0 < _n_olist(p) <= _ult]
+            if _atingidos:
+                st.caption(f"⚠️ Entrariam **{len(_atingidos)}** pedido(s) "
+                           f"pendente(s) com nº ≤ #{_ult}:")
+                for p in _atingidos[:12]:
+                    it = (p.get("itens") or [{}])[0]
+                    st.caption(f"   • #{p.get('numero_olist')} · {p.get('canal')} "
+                               f"· {it.get('sku', '')}")
+                if len(_atingidos) > 12:
+                    st.caption(f"   • … e mais {len(_atingidos) - 12}")
+            else:
+                st.caption("Nenhum pedido pendente até esse número.")
+
+        if _marcar_ate:
+            def _n_olist(p):
+                try:
+                    return int(str(p.get("numero_olist") or 0).lstrip("#"))
+                except (TypeError, ValueError):
+                    return 0
+            _alvo_ate = [p for p in _pend if 0 < _n_olist(p) <= _ult]
+            if not _alvo_ate:
+                st.info("Nenhum pedido pendente até esse número.")
+            else:
+                r_a = ondas.salvar_slot(_slot_ate, _alvo_ate, modo="somar")
+                st.success(f"✅ Onda {r_a['slot']}: {r_a['gravados']} pedido(s) "
+                           f"até **#{_ult}**.")
                 st.rerun()
 
     if _feitos:
-        with st.expander(f"✅ {len(_feitos)} pedido(s) já processados"):
+        with st.expander(f"✅ {len(_feitos)} pedido(s) já em alguma onda"):
             for p in sorted(_feitos, key=lambda x: (x.get("onda") or 0)):
                 it = (p.get("itens") or [{}])[0]
                 st.caption(
@@ -584,9 +702,19 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                     f"· {p.get('canal')} · {it.get('quantidade', 1)}x "
                     f"{it.get('sku', '')}"
                 )
+            # Limpeza EXPLICITA (nunca automatica — ver comentario no topo).
+            if st.button("🧹 Remover das ondas os que já saíram do Olist",
+                         key=f"btn_limpar_ondas_{chave}",
+                         help="Pedido despachado de vez não precisa mais "
+                              "ocupar espaço na onda."):
+                _n = ondas.limpar_despachados(
+                    {str(p.get("numero_ecommerce") or "").upper() for p in _todos})
+                st.info(f"{_n} pedido(s) removidos das ondas."
+                        if _n else "Nada a remover (ou a fila veio incompleta "
+                                   "— nesse caso a limpeza é abortada por segurança).")
+                st.rerun()
+
     st.divider()
-    # Sem onda travada o alvo e' a fila livre -- mesmo comportamento de antes,
-    # em que as fases consumiam os pendentes.
     return _pend, _pend, _feitos
 
 

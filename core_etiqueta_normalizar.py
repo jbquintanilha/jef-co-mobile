@@ -47,11 +47,57 @@ log = logging.getLogger(__name__)
 LARGURA_10X15 = 100 / 25.4 * 72   # 283.46 pt
 ALTURA_10X15 = 150 / 25.4 * 72    # 425.20 pt
 
-# Margem branca deixada em volta da etiqueta ao encaixar na pagina final
-MARGEM_PT = 2.0
+# Margem branca deixada em volta da etiqueta ao encaixar na pagina final.
+# 2pt (~0,7mm) era apertado demais -- impressora termica corta/desalinha
+# perto da borda fisica do rolo (Jota, 31/08/2026: "coloque uma margem de
+# seguranca... evite impressao nos limites"). 6pt (~2,1mm) da folga real sem
+# encolher a etiqueta de forma perceptivel.
+MARGEM_PT = 6.0
 
 # Abaixo disso consideramos que a pagina esta' em branco (ruido de render)
 AREA_MINIMA_PT2 = 100.0
+
+# DPI do achatamento de transparencia. 300 e' o nativo da LABEL 2.
+ACHATAR_DPI = 300
+
+
+def achatar_transparencia(pdf: str | Path, saida: str | Path | None = None,
+                          *, dpi: int = ACHATAR_DPI) -> Path:
+    """Resolve alpha/SMask rasterizando cada pagina sobre branco OPACO.
+
+    ⚠️ Achado real 31/08/2026 (Jota: "sumiu o logo da marca, aparece no pdf,
+    mas na impressao nao"): tanto o logo do cartao de agradecimento quanto o
+    logo no topo da etiqueta sao imagens RGB praticamente PRETAS cuja forma
+    existe apenas no canal alpha (SMask). Visualizador de PDF compoe o alpha
+    e mostra certo; driver de termica e' 1-bit monocromatico, nao faz
+    blending -- descarta a imagem e o logo some no papel.
+
+    Rasterizando com `alpha=False`, a composicao acontece AQUI e o que chega
+    na impressora ja' e' pixel solido.
+    """
+    import fitz
+
+    entrada = Path(pdf)
+    destino = Path(saida) if saida else entrada
+
+    origem = fitz.open(str(entrada))
+    novo = fitz.open()
+    for pno in range(origem.page_count):
+        pag = origem[pno]
+        pix = pag.get_pixmap(dpi=dpi, alpha=False)
+        nova = novo.new_page(width=pag.rect.width, height=pag.rect.height)
+        nova.insert_image(nova.rect, pixmap=pix)
+
+    # deflate+garbage: sem isso o raster de 300 DPI sai ~6 MB por pagina.
+    temporario = destino.with_name(f"{destino.stem}.__flat__.pdf")
+    novo.save(str(temporario), deflate=True, garbage=4)
+    novo.close()
+    origem.close()
+
+    if destino.exists():
+        destino.unlink()
+    temporario.replace(destino)
+    return destino
 
 
 def _bbox_tinta(pagina) -> Any:
@@ -101,6 +147,7 @@ def normalizar_10x15(
     saida: str | Path | None = None,
     *,
     forcar: bool = False,
+    achatar: bool = False,
 ) -> dict[str, Any]:
     """Reescreve o PDF com todas as paginas em 10x15cm, sem sobra de papel.
 
@@ -108,6 +155,11 @@ def normalizar_10x15(
         pdf_entrada: PDF original (Shopee A4 ou TikTok A6).
         saida: destino. Default = `<entrada>_10x15.pdf`.
         forcar: reprocessa mesmo paginas que ja' estao no tamanho certo.
+        achatar: resolve alpha/SMask rasterizando sobre branco opaco (ver
+            `achatar_transparencia`). Default False — o PDF final ja passa
+            por `core_etiqueta_termica.blindar_para_termica`, que rasteriza
+            tudo em 1-bit e resolve o alpha junto. Achatar aqui tambem so'
+            gastaria tempo rasterizando duas vezes.
 
     Retorna:
         {"saida", "paginas", "recortadas", "ja_ok", "vazias"}
@@ -177,6 +229,13 @@ def normalizar_10x15(
     if destino.exists():
         destino.unlink()
     temporario.replace(destino)
+
+    if achatar:
+        try:
+            achatar_transparencia(destino)
+        except Exception as exc:  # nunca derrubar o lote por causa disso
+            log.warning("Achatamento de transparencia falhou em %s: %s",
+                        destino.name, exc)
 
     log.info(
         "Normalizado %s -> %s (%d recortadas, %d ja ok, %d vazias)",

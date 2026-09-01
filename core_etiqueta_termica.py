@@ -1,0 +1,195 @@
+# ==============================================================================
+# NOME DO SCRIPT: core_etiqueta_termica.py
+# DESCRICAO: Converte o PDF final de etiquetas para o formato mais compativel
+#            possivel com impressora termica generica (as de ~R$400).
+# FUNCAO: Rasteriza cada pagina em bitmap cinza/preto puro -- sem fonte, sem
+#         transparencia, sem vetor. E' o denominador comum que qualquer driver
+#         termica aceita.
+# STATUS: ATIVO
+# VERSAO: 1.0
+# DATA: 31/08/2026
+# AUTOR: Terminador (001) / Claude
+# ==============================================================================
+"""Blindagem do PDF de etiquetas para termica barata.
+
+Contexto (Jota, 31/08/2026): "comportamento estranho da impressora, mantem
+apresentando o erro... ao baixar a etiqueta direto no site e imprimir
+funcionou". Ou seja: o PDF CRU do canal imprime bem; o nosso, montado, nao.
+
+Diferenca medida entre os dois:
+
+    CRU (site, imprime OK)   -> 2 fontes TrueType EMBUTIDAS
+    NOSSO (falha)            -> as 2 do canal
+                              + Helvetica / Helvetica-Bold Type1 NAO embutidas
+                                (carimbo #N #m e SKU, inseridos por nos)
+                              + no cartao: 9 fontes NAO embutidas com nome
+                                VAZIO (PDF malformado vindo do Chromium)
+
+Fonte nao embutida obriga a impressora a substituir por conta propria. Termica
+generica nao tem catalogo de fonte nenhum: dependendo do firmware ela pula a
+pagina, imprime em branco ou aborta o job. Somado a isso, o alpha/SMask do logo
+(ver `core_etiqueta_normalizar.achatar_transparencia`) exige blending que o
+driver 1-bit nao faz.
+
+A saida que elimina TODAS essas variaveis de uma vez: rasterizar. Depois de
+virar bitmap, nao existe mais fonte para substituir, transparencia para compor
+nem vetor para interpretar -- e' exatamente o que a impressora produziria
+internamente, entregue pronto.
+
+Uso:
+    from core_etiqueta_termica import blindar_para_termica
+    blindar_para_termica("etiquetas.pdf")            # sobrescreve
+    blindar_para_termica("in.pdf", "out.pdf", modo="1bit")
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+# 203 DPI e' a resolucao nativa da esmagadora maioria das termicas 10x15
+# baratas (8 dots/mm). Gerar exatamente no nativo evita que o driver
+# reamostre -- reamostragem e' o que borra codigo de barras e QR.
+DPI_TERMICA = 203
+
+# Acima deste brilho o pixel vira branco no modo 1bit. 128 e' o meio da
+# escala; subir preserva tinta (linha fina sobrevive), descer limpa fundo.
+LIMIAR_1BIT = 160
+
+
+def _para_1bit(pix, limiar: int = LIMIAR_1BIT):
+    """Pixmap cinza -> preto/branco puro, sem meio-tom.
+
+    Termica nao tem meio-tom real: ela simula com dithering, e dithering em
+    codigo de barras/QR gera leitura falha. Cortando no limiar, barra fica
+    solida e fundo fica limpo.
+
+    ⚠️ SEM numpy de proposito (achado 01/09/2026). A versao anterior usava
+    `numpy` e o `requirements-deploy.txt` (que a nuvem instala) nao tem
+    numpy: na Streamlit Cloud dava ImportError, caia no `except` de quem
+    chamava e o PDF saia SEM blindagem, em silencio -- o Jota recebeu um PDF
+    com 10 fontes, 21 SMasks e 2 tamanhos de pagina achando que estava
+    corrigido. `bytes.translate` faz o mesmo corte por limiar usando so' a
+    biblioteca padrao, entao nao ha' mais o que faltar na nuvem.
+    """
+    import fitz
+
+    # Garante 1 canal (cinza) antes de binarizar
+    if pix.n > 1:
+        pix = fitz.Pixmap(fitz.csGRAY, pix)
+
+    # Tabela de 256 posicoes: abaixo do limiar -> 0, senao -> 255.
+    # translate() aplica isso no buffer inteiro em C, sem laco Python.
+    tabela = bytes(0 if i < limiar else 255 for i in range(256))
+    return fitz.Pixmap(
+        fitz.csGRAY, pix.width, pix.height, pix.samples.translate(tabela), 0
+    )
+
+
+def blindar_para_termica(
+    pdf: str | Path,
+    saida: str | Path | None = None,
+    *,
+    dpi: int = DPI_TERMICA,
+    modo: str = "1bit",
+) -> dict[str, Any]:
+    """Reescreve o PDF como bitmap cinza/preto, pagina a pagina.
+
+    Args:
+        pdf: PDF de entrada (o final, ja montado e numerado).
+        saida: destino. Default = sobrescreve a entrada.
+        dpi: resolucao do raster. Default 203 (nativo da termica).
+        modo: "1bit" (preto/branco puro, recomendado) ou "cinza"
+            (mantem tons -- so' se a arte precisar de gradiente).
+
+    Retorna:
+        {"saida", "paginas", "modo", "dpi", "mb"}
+    """
+    import fitz
+
+    entrada = Path(pdf)
+    if not entrada.exists():
+        raise FileNotFoundError(f"PDF nao encontrado: {entrada}")
+
+    destino = Path(saida) if saida else entrada
+
+    origem = fitz.open(str(entrada))
+    novo = fitz.open()
+
+    # Tamanho UNICO para todas as paginas. Rasterizar preserva o tamanho de
+    # cada pagina, e o PDF chega aqui com dois: a etiqueta em 283.46x425.20pt
+    # (10x15cm exato) e o cartao em 282.96x425.04pt (Chromium). Alternar
+    # tamanho a cada folha e' lido como "media size mismatch" pela termica,
+    # que avanca papel/pula pagina na troca. Uniformizando aqui, o problema
+    # morre mesmo que a origem volte a divergir.
+    larguras = [origem[i].rect.width for i in range(origem.page_count)]
+    alturas = [origem[i].rect.height for i in range(origem.page_count)]
+    largura_alvo = max(larguras) if larguras else 0
+    altura_alvo = max(alturas) if alturas else 0
+
+    for pno in range(origem.page_count):
+        pag = origem[pno]
+        # csGRAY + alpha=False: ja sai sem cor e sem transparencia, entao o
+        # logo em SMask e' composto AQUI em vez de virar problema do driver.
+        pix = pag.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=False)
+        if modo == "1bit":
+            pix = _para_1bit(pix)
+
+        nova = novo.new_page(width=largura_alvo, height=altura_alvo)
+        # Encaixa preservando a proporcao (a diferenca e' de ~0.2%, entao
+        # visualmente nada muda; o que importa e' o MediaBox ficar igual).
+        escala = min(largura_alvo / pag.rect.width,
+                     altura_alvo / pag.rect.height)
+        larg = pag.rect.width * escala
+        alt = pag.rect.height * escala
+        destino_rect = fitz.Rect(
+            (largura_alvo - larg) / 2,
+            (altura_alvo - alt) / 2,
+            (largura_alvo - larg) / 2 + larg,
+            (altura_alvo - alt) / 2 + alt,
+        )
+        nova.insert_image(destino_rect, pixmap=pix)
+
+    # deflate obrigatorio: bitmap cru de 203 DPI passa de 1 MB por pagina.
+    # Em preto/branco puro o Flate comprime muito bem (grandes areas iguais).
+    temporario = destino.with_name(f"{destino.stem}.__term__.pdf")
+    novo.save(str(temporario), deflate=True, garbage=4)
+    paginas = novo.page_count
+    novo.close()
+    origem.close()
+
+    if destino.exists():
+        destino.unlink()
+    temporario.replace(destino)
+
+    mb = round(destino.stat().st_size / 1024 / 1024, 2)
+    log.info(
+        "Blindado para termica: %s (%d paginas, %s, %d DPI, %s MB)",
+        destino.name, paginas, modo, dpi, mb,
+    )
+
+    return {
+        "saida": str(destino),
+        "paginas": paginas,
+        "modo": modo,
+        "dpi": dpi,
+        "mb": mb,
+    }
+
+
+if __name__ == "__main__":
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if len(sys.argv) < 2:
+        print("uso: python core_etiqueta_termica.py <arquivo.pdf> [saida.pdf]")
+        raise SystemExit(1)
+
+    destino = sys.argv[2] if len(sys.argv) > 2 else None
+    r = blindar_para_termica(sys.argv[1], destino)
+    print(f"{r['saida']}")
+    print(f"  {r['paginas']} paginas — {r['modo']} @ {r['dpi']} DPI — {r['mb']} MB")

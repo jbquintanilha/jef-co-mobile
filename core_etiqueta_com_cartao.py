@@ -74,6 +74,36 @@ def _get_cartao(canal: str) -> Path:
     return candidatos[0]
 
 
+def _cartao_normalizado(canal: str) -> Path:
+    """Cartao no MESMO tamanho exato da etiqueta (283.4646x425.1969pt).
+
+    O cartao nasce via Playwright/Chromium (`gerar_cartao_v5.py`, CSS
+    `@page{size:10cm 15cm}`) e sai 282.96x425.04pt -- ~0.5pt mais estreito
+    que o alvo exato calculado em `core_etiqueta_normalizar` (283.46x425.20pt,
+    = 100x150mm via 1pt=1/72in). Intercalar direto (`add_page` sem ajuste)
+    alterna o tamanho de pagina a cada 2 folhas no PDF final; a impressora
+    termica trata isso como "media size mismatch" e insere avanco/pagina
+    em branco na troca (achado 31/08/2026, PDF real do Jota pulando pagina).
+    Corrige gerando 1x uma copia normalizada e cacheando -- o cartao e' fixo
+    por canal, nao precisa renormalizar a cada lote.
+
+    A normalizacao tambem ACHATA a transparencia (alpha/SMask) — o logo da
+    marca no cartao e' uma imagem RGB 100% PRETA cuja forma existe apenas no
+    canal alpha, e a termica descarta isso, fazendo o logo SUMIR no papel
+    (31/08/2026). Ver `core_etiqueta_normalizar.achatar_transparencia`.
+    """
+    fonte = _get_cartao(canal)
+    if not fonte.is_file():
+        return fonte
+    cache = fonte.with_name(f"{fonte.stem}_norm.pdf")
+    if cache.is_file() and cache.stat().st_mtime >= fonte.stat().st_mtime:
+        return cache
+
+    import core_etiqueta_normalizar as norm
+    r = norm.normalizar_10x15(fonte, cache, forcar=True)
+    return Path(r["saida"])
+
+
 class _CartoesProxy(dict):
     """Permite acesso dinâmico CARTOES['tiktok'] resolvendo o caminho na hora."""
     def __getitem__(self, key: str) -> Path:
@@ -125,7 +155,7 @@ def intercalar_canal_unico(
         from PyPDF2 import PdfReader, PdfWriter  # type: ignore
 
     canal = _normalizar_canal(canal)
-    cartao_path = CARTOES.get(canal)
+    cartao_path = _cartao_normalizado(canal)
 
     if not cartao_path or not Path(cartao_path).is_file():
         return {
@@ -354,7 +384,7 @@ def montar_pdf(pdf_entrada: str, saida: str,
             sem_cartao.append({"indice": i, "tracking": tracking})
             continue
 
-        caminho = CARTOES.get(canal)
+        caminho = _cartao_normalizado(canal)
         if not caminho or not caminho.exists():
             log.warning("Cartao do canal %s nao encontrado em %s", canal, caminho)
             sem_cartao.append({"indice": i, "tracking": tracking, "motivo": "cartao ausente"})
