@@ -59,6 +59,19 @@ DPI_TERMICA = 203
 # escala; subir preserva tinta (linha fina sobrevive), descer limpa fundo.
 LIMIAR_1BIT = 160
 
+# Paginas cujo conteudo e' ARTE (cartao de agradecimento) saem em cinza, nao
+# em 1-bit. Ver `_e_arte()` e o achado do emoji abaixo.
+#
+# ⚠️ Achado real 01/09/2026: o cartao tem o emoji 🎁 colorido (vermelho e
+# amarelo). Cortado em 1-bit por limiar, as areas claras viraram branco, o
+# contorno sumiu e a silhueta virou um "T" torto no papel (Jota: "as
+# etiquetas de agradecimento estao com erro"). Em cinza o mesmo emoji sai
+# perfeitamente legivel -- a termica resolve o meio-tom com o proprio
+# dithering do driver, que e' aceitavel em ARTE (nao em codigo de barras).
+#
+# A etiqueta continua em 1-bit: la' o que importa e' barra solida e fundo
+# limpo, e dithering em codigo de barras gera leitura falha.
+
 
 def _para_1bit(pix, limiar: int = LIMIAR_1BIT):
     """Pixmap cinza -> preto/branco puro, sem meio-tom.
@@ -87,6 +100,39 @@ def _para_1bit(pix, limiar: int = LIMIAR_1BIT):
     return fitz.Pixmap(
         fitz.csGRAY, pix.width, pix.height, pix.samples.translate(tabela), 0
     )
+
+
+def _e_arte(pagina) -> bool:
+    """A pagina e' ARTE (cartao) em vez de etiqueta com codigo de barras?
+
+    Serve para escolher entre cinza (preserva desenho) e 1-bit (preserva
+    leitura de codigo de barras) -- ver o comentario de LIMIAR_1BIT.
+
+    Criterio: a etiqueta de envio SEMPRE carrega numeros longos de rastreio
+    (o codigo de barras vem acompanhado do numero impresso) ou a chave de
+    NF-e de 44 digitos. O cartao de agradecimento nao tem nada disso -- e'
+    texto corrido de agradecimento.
+
+    ⚠️ NAO da' para detectar por "tem imagem grande": quando a pagina ja'
+    chega rasterizada (caso do PDF que a Esteira monta), TODA pagina e' uma
+    imagem grande unica e o teste classificaria tudo como etiqueta.
+    """
+    try:
+        texto = pagina.get_text("text") or ""
+        if not texto.strip():
+            # Pagina sem texto extraivel (ja' rasterizada): sem como decidir,
+            # trata como etiqueta -- 1-bit nunca prejudica leitura.
+            return False
+        import re
+        # rastreio/chave de NF-e: sequencia longa de digitos
+        if re.search(r"\d{15,}", texto.replace(" ", "")):
+            return False
+        # rastreio dos Correios (AA123456789BR)
+        if re.search(r"\b[A-Z]{2}\d{9}[A-Z]{2}\b", texto):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def blindar_para_termica(
@@ -130,13 +176,21 @@ def blindar_para_termica(
     largura_alvo = max(larguras) if larguras else 0
     altura_alvo = max(alturas) if alturas else 0
 
+    paginas_arte = 0
+
     for pno in range(origem.page_count):
         pag = origem[pno]
         # csGRAY + alpha=False: ja sai sem cor e sem transparencia, entao o
         # logo em SMask e' composto AQUI em vez de virar problema do driver.
         pix = pag.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=False)
+        # Pagina de ARTE (cartao) fica em cinza: o 1-bit destruia o emoji 🎁
+        # colorido, que virava um "T" torto no papel. Etiqueta continua em
+        # 1-bit, onde barra solida importa mais que meio-tom.
         if modo == "1bit":
-            pix = _para_1bit(pix)
+            if _e_arte(pag):
+                paginas_arte += 1
+            else:
+                pix = _para_1bit(pix)
 
         nova = novo.new_page(width=largura_alvo, height=altura_alvo)
         # Encaixa preservando a proporcao (a diferenca e' de ~0.2%, entao
@@ -167,13 +221,15 @@ def blindar_para_termica(
 
     mb = round(destino.stat().st_size / 1024 / 1024, 2)
     log.info(
-        "Blindado para termica: %s (%d paginas, %s, %d DPI, %s MB)",
-        destino.name, paginas, modo, dpi, mb,
+        "Blindado para termica: %s (%d paginas, %d em cinza por serem arte, "
+        "%s, %d DPI, %s MB)",
+        destino.name, paginas, paginas_arte, modo, dpi, mb,
     )
 
     return {
         "saida": str(destino),
         "paginas": paginas,
+        "paginas_arte": paginas_arte,
         "modo": modo,
         "dpi": dpi,
         "mb": mb,
