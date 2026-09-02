@@ -42,6 +42,8 @@ import core_scanner_expedicao as expedicao
 import core_scanner_auditoria as auditoria
 import core_comprovante_conferencia as comprovante
 import scanner_camera_ao_vivo as camera_ao_vivo
+import core_scanner_foco as foco
+import core_scanner_som as som
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Scanner de Conferência — J&F Co.", layout="wide", page_icon="📷")
@@ -300,9 +302,23 @@ def _processar_codigo(codigo: str) -> None:
             "motivo": "Esse código é da nota fiscal ou do CEP — não identifica "
                       "o pedido. Bipe o código de RASTREIO da etiqueta.",
         }
+        st.session_state.scanner_som = som.ERRO
         return
     st.session_state.scanner_ultimo_codigo = limpo
     st.session_state.scanner_resultado = resolver.resolver_codigo(limpo)
+
+    # Som marcado AQUI (na leitura nova), nao no render: o Streamlit re-executa
+    # a pagina inteira a cada interacao, e tocar no render faria o bip repetir
+    # sozinho enquanto o pedido estivesse na tela.
+    _r = st.session_state.scanner_resultado or {}
+    if not _r.get("encontrado"):
+        st.session_state.scanner_som = som.ERRO
+    elif len(db.desserializar_itens(_r)) > 1:
+        # Multi-item: acerto, mas o operador PRECISA parar e conferir peca a
+        # peca. Som proprio pra nao ser confundido com o "pode seguir".
+        st.session_state.scanner_som = som.ATENCAO
+    else:
+        st.session_state.scanner_som = som.OK
 
     # LEI DA VERIFICACAO DOBRADA (Jota, 2026-08-12): confirmar em SEGUNDA FONTE
     # (API do marketplace) que o pedido em tela bate com o que o cliente
@@ -324,6 +340,17 @@ def _validar_produto(codigo_peca: str) -> None:
     st.session_state.scanner_validacao = validador.validar(
         res_atual.get("sku", ""), codigo_peca
     )
+
+    # A peca errada na caixa e' o erro caro (troca, reenvio, reclamacao).
+    # Vale um som proprio: aqui o operador esta' de maos ocupadas fechando
+    # o pacote e nao necessariamente olhando a tela.
+    _v = st.session_state.scanner_validacao or {}
+    if _v.get("ok"):
+        st.session_state.scanner_som = som.OK
+    elif _v.get("nivel") == "sem_dados":
+        st.session_state.scanner_som = som.ATENCAO
+    else:
+        st.session_state.scanner_som = som.ERRO
 
 
 # ------------------------------------------------------------------ #
@@ -443,6 +470,12 @@ if st.session_state.scanner_encerrado:
 res = st.session_state.scanner_resultado
 codigo_atual = st.session_state.scanner_ultimo_codigo
 tem_leitura = bool(codigo_atual)
+
+# Bip da leitura: consome o sinal deixado por _processar_codigo. Sai da
+# sessao ao tocar, senao repetiria a cada rerun da pagina.
+_sinal = st.session_state.pop("scanner_som", None)
+if _sinal:
+    som.tocar(_sinal)
 
 # Ações disparadas pelos botões HTML do card CANCELADO (Streamlit não tem
 # botão laranja nativo — usamos links estilizados com ?acao=...). Consome o
@@ -804,6 +837,29 @@ with st.form("form_bipagem", clear_on_submit=True):
             _processar_codigo(codigo_digitado)
             st.rerun()
 
+# Guarda de foco: o cursor sai deste campo sozinho a cada rerun/re-arme da
+# camera, e a pistola passa a digitar no vazio. O JS repoe o cursor aqui e
+# escuta o barcode de comando *FOCO* (bipado na propria tela), pro operador
+# nao precisar largar o pacote e vir clicar no PC.
+foco.injetar_guarda_foco()
+
+# Barcode de comando SEMPRE disponivel, dentro de um expander pra nao poluir
+# a tela. O da ficha do pedido so' existe com pedido aberto -- se o cursor
+# sumir ANTES de bipar o primeiro, este aqui e' o que resolve.
+with st.expander("🎯 Cursor sumiu? Bipe este código", expanded=False):
+    _render_html(
+        '<div style="background:#ffffff; border-radius:10px; padding:10px 12px 6px;'
+        ' display:inline-flex; flex-direction:column; align-items:center;">'
+        f'{foco.barcode_comando_svg()}'
+        '<div style="font-size:11px; font-weight:800; color:#334155;'
+        ' letter-spacing:0.5px; margin-top:2px;">DEVOLVE O CURSOR AO CAMPO</div>'
+        '</div>'
+    )
+    st.caption(
+        "Bipe com a própria pistola, na tela. O cursor volta para o campo de "
+        "bipagem sem precisar usar o mouse."
+    )
+
 # ---- autocomplete: a partir de 3 caracteres, sugere de qualquer parte ----
 # Campo SEPARADO do form acima de proposito. O form usa clear_on_submit=True
 # (necessario pra pistola/camera nao repetirem a leitura anterior), o que apaga
@@ -1063,12 +1119,29 @@ if res and res.get("encontrado"):
             </div>
             """
 
+        # Barcode de COMANDO — fica ao lado do titulo, visivel enquanto o
+        # produto esta' na tela. Bipar ele com a MESMA pistola devolve o
+        # cursor ao campo de bipagem, sem ir ate' o PC (Jota, 02/09).
+        # Fundo branco solido e barra grossa: leitor a laser lendo de LCD.
+        _bc_foco_html = (
+            '<div style="background:#ffffff; border-radius:10px; padding:8px 10px 4px;'
+            ' display:inline-flex; flex-direction:column; align-items:center;'
+            ' box-shadow:0 2px 8px rgba(0,0,0,0.4);">'
+            f'{foco.barcode_comando_svg()}'
+            '<div style="font-size:10px; font-weight:800; color:#334155;'
+            ' letter-spacing:0.5px; margin-top:2px;">BIPE P/ VOLTAR O CURSOR</div>'
+            '</div>'
+        )
+
         # Ficha do Pedido
         card_sucesso_html = f"""
         <div class="scanner-card-ok">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                 <span class="scanner-titulo">🟢 SEPARAR ESTE PEDIDO</span>
                 {badge}
+            </div>
+            <div style="display:flex; justify-content:flex-start; margin:10px 0 2px;">
+                {_bc_foco_html}
             </div>
             {_bloco_itens_html}
             <div style="display:flex; gap:12px; align-items:center; margin:14px 0 10px; flex-wrap:wrap;">
