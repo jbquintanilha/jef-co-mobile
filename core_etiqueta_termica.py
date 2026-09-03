@@ -50,10 +50,22 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# 203 DPI e' a resolucao nativa da esmagadora maioria das termicas 10x15
-# baratas (8 dots/mm). Gerar exatamente no nativo evita que o driver
-# reamostre -- reamostragem e' o que borra codigo de barras e QR.
-DPI_TERMICA = 203
+# 203 DPI e' a resolucao nativa da termica (8 dots/mm), e gerar no nativo
+# evita reamostragem do driver. MAS: a 203 DPI a barra mais fina da etiqueta
+# TikTok (0,125mm) cai em EXATAMENTE 1 pixel -- e 1 pixel nao sobrevive a
+# impressao: some ou engorda conforme o arredondamento da cabeca termica.
+# A Shopee escapava porque a barra dela tem 0,250mm (2 px).
+#
+# ⚠️ Achado 02/09/2026 (Jota: "nao le o horizontal" do TikTok). Medido no PDF
+# real: a 203 DPI o Code128 do rastreio nao decodifica depois de impresso; a
+# 406 a mesma barra vira 2 px e sobrevive.
+#
+# 406 = DOBRO EXATO do nativo, de proposito. Multiplo inteiro mantem cada dot
+# da cabeca alinhado com o pixel da imagem. Testado 300 DPI (nao-multiplo) e a
+# chave da NF-e saiu CORROMPIDA na leitura (33260930746304... em vez de
+# 33260965746389...) -- exatamente a reamostragem que o comentario original
+# alertava. Nao trocar por um valor que nao seja multiplo de 203.
+DPI_TERMICA = 406
 
 # Acima deste brilho o pixel vira branco no modo 1bit. 128 e' o meio da
 # escala; subir preserva tinta (linha fina sobrevive), descer limpa fundo.
