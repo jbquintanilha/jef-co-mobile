@@ -231,6 +231,65 @@ def melhor_modo(cam_nome: str, teto_altura: int = 720) -> tuple:
     return modos[0]
 
 
+def salvar_camera_escolhida(cam_nome: str) -> bool:
+    """Grava a camera escolhida pelo operador no camera_config.json.
+
+    A escolha e' do operador, nao do palpite do codigo -- ver a nota em
+    `escolher_camera_gravacao`. Grava tambem o modo real da camera, para o
+    gravador .bat (tools/gravador_webcam_prova) usar a mesma.
+    """
+    if not cam_nome:
+        return False
+    try:
+        dados = {}
+        if CONFIG_FILE.exists():
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                dados = json.load(f) or {}
+        dados["camera_nome"] = cam_nome
+        try:
+            _codec, larg, alt, fps = melhor_modo(cam_nome)
+            dados["largura"], dados["altura"], dados["fps"] = larg, alt, fps
+        except Exception:
+            pass                       # nome ja' basta; modo e' so' referencia
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(dados, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def espiar_camera(cam_nome: str, timeout: int = 12):
+    """1 quadro JPEG da camera, so' para o operador CONFERIR qual e' qual.
+
+    ⚠️ Por que existe (Jota, 02/09/2026): o NOME nao diz nada. Nesta
+    maquina "Dispositivo de video USB" e' a camera FRONTAL do notebook e
+    "WEB CAMER" e' a da bancada -- o inverso do que o nome sugere. Adivinhar
+    pelo nome ja' fez a gravacao de prova sair apontada pro rosto em vez da
+    mesa. So' o olho resolve: mostra a imagem e o operador escolhe.
+
+    Devolve bytes JPEG ou None. Nunca levanta. NAO chamar com gravacao
+    ativa: a camera fica ocupada e o ffmpeg de teste falha.
+    """
+    try:
+        codec, larg, alt, _fps = melhor_modo(cam_nome)
+    except Exception:
+        codec, larg, alt = "mjpeg", 640, 480
+
+    entrada = (["-vcodec", "mjpeg"] if codec == "mjpeg"
+               else ["-pixel_format", codec])
+    cmd = [
+        "ffmpeg", "-nostdin", "-f", "dshow", *entrada,
+        "-video_size", f"{larg}x{alt}",
+        "-i", f"video={cam_nome}",
+        "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "-",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        return r.stdout or None
+    except Exception:
+        return None
+
+
 def escolher_camera_gravacao(preferida: str = "") -> str:
     """Nome da camera que a gravacao deve usar.
 
@@ -249,15 +308,16 @@ def escolher_camera_gravacao(preferida: str = "") -> str:
             if preferida.strip().lower() in cam.strip().lower():
                 return cam
 
-    # ⚠️ ORDEM IMPORTA (Jota, 02/09/2026): "WEB CAMER" e' a webcam NATIVA do
-    # PC; a camera da bancada, apontada pra mesa, chama "Dispositivo de video
-    # USB". A regra antiga procurava "web camer" PRIMEIRO e por isso acendia
-    # a nativa quando a config se perdia. USB vem antes de proposito.
-    for chave in ("dispositivo de v", "usb", "logitech", "external", "web camer"):
-        for cam in cams:
-            if chave in cam.lower():
-                return cam
-
+    # ⚠️ NAO adivinhar pelo nome (Jota, 02/09/2026). Nesta maquina
+    # "Dispositivo de video USB" e' a camera FRONTAL e "WEB CAMER" e' a da
+    # bancada -- o inverso do que o nome sugere. Qualquer heuristica de nome
+    # ("usb", "web camer", "external") acerta numa maquina e erra na outra,
+    # e o erro so' aparece depois, no video de prova apontado pro lugar
+    # errado. Quem escolhe e' o operador, vendo a imagem (`espiar_camera`);
+    # a escolha fica no camera_config.json e e' respeitada acima.
+    #
+    # Este fallback so' roda quando nao ha' escolha salva: pega a primeira e
+    # deixa o operador corrigir na tela, em vez de fingir que sabe.
     return cams[0]
 
 

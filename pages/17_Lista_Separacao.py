@@ -1850,6 +1850,44 @@ if fase(4):
 
             else:
                 st.caption("⚪ Câmera parada")
+
+                # ⚠️ ESCOLHA EXPLICITA, sem adivinhar pelo nome (Jota,
+                # 02/09/2026: "sozinha ta mudando sozinho"). Nesta maquina
+                # "Dispositivo de video USB" e' a camera FRONTAL e "WEB CAMER"
+                # e' a da bancada -- o inverso do que o nome sugere. Palpite
+                # por nome ja' fez o video de PROVA sair apontado pro rosto.
+                # Aqui o operador ve a imagem e decide; a escolha fica salva.
+                try:
+                    _cams = cv.listar_cameras_dshow()
+                except Exception:
+                    _cams = []
+                if _cams:
+                    _salva = cv.carregar_camera_config().get("camera_nome", "")
+                    _idx = _cams.index(_salva) if _salva in _cams else 0
+                    _cam_sel = st.selectbox(
+                        "Câmera da gravação", _cams, index=_idx,
+                        key="sel_camera_f5",
+                        help="O nome não diz qual é qual — use 👁️ Ver imagem "
+                             "para conferir antes de gravar.",
+                    )
+                    if _cam_sel != _salva:
+                        cv.salvar_camera_escolhida(_cam_sel)
+
+                    if st.button("👁️ Ver imagem desta câmera",
+                                 use_container_width=True, key="btn_espiar_cam"):
+                        with st.spinner("Capturando…"):
+                            _jpg = cv.espiar_camera(_cam_sel)
+                        if _jpg:
+                            st.session_state["preview_cam_f5"] = _jpg
+                        else:
+                            st.warning(
+                                "Não consegui capturar. A câmera pode estar "
+                                "em uso por outro programa."
+                            )
+                    if st.session_state.get("preview_cam_f5"):
+                        st.image(st.session_state["preview_cam_f5"],
+                                 caption=f"📷 {_cam_sel}", width=260)
+
                 if st.button("🎥 Iniciar gravação", type="primary",
                              use_container_width=True, key="btn_iniciar_video"):
                     try:
