@@ -93,7 +93,7 @@ def _assinar(path: str, qp: dict, body_str: str = "") -> str:
 def _qp_base(extra: dict | None = None) -> dict:
     qp = {
         "app_key": APP_KEY,
-        "access_token": ACCESS_TOKEN,
+        "access_token": _obter_token_atual(),
         "shop_cipher": SHOP_CIPHER,
         "timestamp": str(int(time.time())),
     }
@@ -102,22 +102,62 @@ def _qp_base(extra: dict | None = None) -> dict:
     return qp
 
 
-def _get(path: str, params: dict | None = None) -> dict:
+def _obter_token_atual() -> str:
+    """Token do momento — releito da FONTE, nao da constante global.
+
+    ⚠️ Aqui a fonte e' `get_secret` (Streamlit secrets na nuvem), nao o
+    .env em disco como no JF_Automacoes. O Streamlit fica dias no ar com
+    o modulo em cache: sem reler, a global segue com o token morto depois
+    de uma renovacao feita por fora.
+    """
+    global ACCESS_TOKEN
+    try:
+        novo = get_secret("TIKTOK_ACCESS_TOKEN", "")
+        if novo:
+            ACCESS_TOKEN = novo
+    except Exception:
+        pass                       # mantem o que ja' tinha
+    return ACCESS_TOKEN
+
+
+def _tentar_auto_refresh() -> bool:
+    """Renova o access_token quando a API responde 105002 (expirado).
+
+    O token da Shop vive ~7 dias. Sem isto a Esteira quebrava no meio da
+    expedicao (Jota, 03/09) e so' voltava com intervencao manual.
+    """
+    try:
+        from core_tiktokshop_auth import cmd_refresh
+        log.warning("🔄 [TIKTOK] Token expirado (105002). Renovando...")
+        cmd_refresh()
+        _obter_token_atual()
+        return True
+    except Exception as exc:
+        log.error(f"❌ [TIKTOK] Falha ao renovar token: {exc}")
+        return False
+
+
+def _get(path: str, params: dict | None = None, _tentativa: int = 1) -> dict:
     qp = _qp_base(params)
     qp["sign"] = _assinar(path, qp)
     r = requests.get(
         f"{BASE}{path}",
         params=qp,
-        headers={"x-tts-access-token": ACCESS_TOKEN},
+        headers={"x-tts-access-token": _obter_token_atual()},
         timeout=30,
     )
     try:
-        return r.json()
+        dados = r.json()
+        if dados.get("code") == 105002 and _tentativa == 1:
+            if _tentar_auto_refresh():
+                return _get(path, params, _tentativa=2)
+        return dados
     except Exception as exc:  # resposta nao-JSON = erro de infra
         raise TikTokEtiquetaError(f"Resposta invalida em {path}: {r.text[:200]}") from exc
 
 
-def _post(path: str, params: dict | None = None, body: dict | None = None) -> dict:
+def _post(path: str, params: dict | None = None, body: dict | None = None,
+          _tentativa: int = 1) -> dict:
     body_str = json.dumps(body or {}, separators=(",", ":"))
     qp = _qp_base(params)
     qp["sign"] = _assinar(path, qp, body_str)
@@ -126,13 +166,17 @@ def _post(path: str, params: dict | None = None, body: dict | None = None) -> di
         params=qp,
         headers={
             "Content-Type": "application/json",
-            "x-tts-access-token": ACCESS_TOKEN,
+            "x-tts-access-token": _obter_token_atual(),
         },
         data=body_str,
         timeout=30,
     )
     try:
-        return r.json()
+        dados = r.json()
+        if dados.get("code") == 105002 and _tentativa == 1:
+            if _tentar_auto_refresh():
+                return _post(path, params, body, _tentativa=2)
+        return dados
     except Exception as exc:
         raise TikTokEtiquetaError(f"Resposta invalida em {path}: {r.text[:200]}") from exc
 
@@ -143,7 +187,9 @@ def _checar_credenciais() -> None:
         for nome, val in (
             ("TIKTOK_APP_KEY", APP_KEY),
             ("TIKTOK_APP_SECRET", APP_SECRET),
-            ("TIKTOK_ACCESS_TOKEN", ACCESS_TOKEN),
+            # Le' da fonte, nao da global: num processo longo ela envelhece
+            # e barraria uma credencial que na verdade esta' boa.
+            ("TIKTOK_ACCESS_TOKEN", _obter_token_atual()),
             ("TIKTOK_SHOP_CIPHER", SHOP_CIPHER),
         )
         if not val
