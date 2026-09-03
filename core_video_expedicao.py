@@ -179,6 +179,58 @@ def listar_cameras_dshow() -> list:
     return cams
 
 
+def melhor_modo(cam_nome: str, teto_altura: int = 720) -> tuple:
+    """Descobre o melhor modo que a camera REALMENTE suporta.
+
+    ⚠️ Antes o script forcava 1280x720 MJPEG em qualquer camera. A camera
+    da bancada ("Dispositivo de video USB") so' entrega 640x480 yuyv422 --
+    o ffmpeg respondia "Could not set video options" e o gravador morria
+    sem gravar nada (incidente 02/09/2026).
+
+    Devolve (codec, largura, altura, fps), onde codec e' "mjpeg" ou o
+    pixel_format cru. Prefere MJPEG (mais nitido e leve) e a MAIOR
+    resolucao -- etiqueta precisa ficar legivel na prova de expedicao.
+    """
+    modos = []
+    try:
+        cmd = ["ffmpeg", "-f", "dshow", "-list_options", "true",
+               "-i", f"video={cam_nome}"]
+        res = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
+                             text=True, encoding="utf-8", errors="ignore",
+                             timeout=25)
+        for linha in res.stderr.splitlines():
+            if "max s=" not in linha:
+                continue
+            try:
+                dims = linha.split("max s=")[1].split()[0]
+                w, h = (int(v) for v in dims.split("x"))
+                fps = int(float(linha.split("fps=")[-1].strip().rstrip(")")))
+            except Exception:
+                continue
+            if "vcodec=mjpeg" in linha:
+                modos.append(("mjpeg", w, h, fps))
+            elif "pixel_format=" in linha:
+                pf = linha.split("pixel_format=")[1].split()[0]
+                modos.append((pf, w, h, fps))
+    except Exception as e:
+        print(f"⚠️ Nao consegui listar modos da camera: {e}")
+
+    if not modos:
+        print("⚠️ Nenhum modo detectado — tentando 640x480 yuyv422")
+        return ("yuyv422", 640, 480, 30)
+
+    # ⚠️ TETO de proposito (Jota, 02/09): a gravacao roda 2-3h por dia.
+    # Em 1080p o arquivo fica gigante sem ganho real -- 720p ja' deixa a
+    # etiqueta legivel na prova de expedicao.
+    cabem = [m for m in modos if m[2] <= teto_altura]
+    if cabem:
+        modos = cabem
+
+    # MJPEG primeiro, depois maior area, depois mais fps
+    modos.sort(key=lambda m: (m[0] == "mjpeg", m[1] * m[2], m[3]), reverse=True)
+    return modos[0]
+
+
 def escolher_camera_gravacao(preferida: str = "") -> str:
     """Nome da camera que a gravacao deve usar.
 
@@ -197,10 +249,14 @@ def escolher_camera_gravacao(preferida: str = "") -> str:
             if preferida.strip().lower() in cam.strip().lower():
                 return cam
 
-    for cam in cams:
-        baixo = cam.lower()
-        if any(p in baixo for p in ("web camer", "usb", "logitech", "external")):
-            return cam
+    # ⚠️ ORDEM IMPORTA (Jota, 02/09/2026): "WEB CAMER" e' a webcam NATIVA do
+    # PC; a camera da bancada, apontada pra mesa, chama "Dispositivo de video
+    # USB". A regra antiga procurava "web camer" PRIMEIRO e por isso acendia
+    # a nativa quando a config se perdia. USB vem antes de proposito.
+    for chave in ("dispositivo de v", "usb", "logitech", "external", "web camer"):
+        for cam in cams:
+            if chave in cam.lower():
+                return cam
 
     return cams[0]
 
@@ -360,8 +416,32 @@ class SessaoGravacao:
         # que ela nao tem faz o ffmpeg abortar com "Could not set video
         # options" — foi o que aconteceu ao baixar para 15 (a WEB CAMER exige
         # 30). Por isso tenta o fps pedido e cai para os padroes conhecidos.
+        # ⚠️ PERGUNTA A' CAMERA em vez de impor o modo (Jota, 02/09/2026).
+        # Antes forcava mjpeg 1280x720 em qualquer camera: com a USB da
+        # bancada ("Dispositivo de video USB", que so' entrega yuyv422
+        # 640x480) o ffmpeg respondia "Could not set video options" ->
+        # "I/O error" e a Fase 5 nao gravava nada. A config guarda o ultimo
+        # uso, nao a verdade do hardware -- so' o sensor sabe o que aceita.
+        codec = "mjpeg"
+        fps_ok = int(self.fps)
+        try:
+            codec, l_ok, a_ok, fps_ok = melhor_modo(cam_nome)
+            if (l_ok, a_ok) != (largura, altura):
+                print(f"[video] '{cam_nome}' nao faz {largura}x{altura} — "
+                      f"usando {l_ok}x{a_ok} {codec}")
+                largura, altura = l_ok, a_ok
+        except Exception as exc:                     # nunca impede de gravar
+            print(f"[video] deteccao de modo falhou ({exc}) — "
+                  f"tentando {largura}x{altura} mjpeg")
+
+        # MJPEG entra como -vcodec; formato cru (yuyv422 etc) como
+        # -pixel_format. Passar o errado e' o mesmo "Could not set video
+        # options" de novo.
+        entrada_formato = (["-vcodec", "mjpeg"] if codec == "mjpeg"
+                           else ["-pixel_format", codec])
+
         candidatos: list = []
-        for taxa in (int(self.fps), 30, 15, 0):
+        for taxa in (int(fps_ok), int(self.fps), 30, 15, 0):
             if taxa not in candidatos:
                 candidatos.append(taxa)
 
@@ -371,7 +451,7 @@ class SessaoGravacao:
                 "ffmpeg",
                 "-f", "dshow",
                 "-rtbufsize", "150M",
-                "-vcodec", "mjpeg",             # MJPEG = HD nativo do sensor
+                *entrada_formato,               # modo REAL desta camera
                 "-video_size", f"{largura}x{altura}",
             ]
             if taxa:                            # 0 = deixa a camera decidir
