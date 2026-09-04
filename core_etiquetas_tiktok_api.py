@@ -111,6 +111,20 @@ def _obter_token_atual() -> str:
     de uma renovacao feita por fora.
     """
     global ACCESS_TOKEN
+    # 1) Supabase PRIMEIRO: e' o unico lugar que sobrevive a um restart na
+    #    nuvem. O `get_secret` repoe o token ANTIGO do blob embutido em
+    #    core_env_loader a cada leitura, entao sozinho ele nunca enxerga
+    #    uma renovacao (Jota, 04/09: "novamente tiktok nao esta baixando").
+    try:
+        from core_tiktok_token_store import token_valido
+        do_banco = token_valido()
+        if do_banco:
+            ACCESS_TOKEN = do_banco
+            return ACCESS_TOKEN
+    except Exception:
+        pass                       # banco fora: cai no Secrets abaixo
+
+    # 2) Secrets / blob — vale enquanto o banco nao tiver um token no prazo.
     try:
         novo = get_secret("TIKTOK_ACCESS_TOKEN", "")
         if novo:
@@ -130,6 +144,20 @@ def _tentar_auto_refresh() -> bool:
         from core_tiktokshop_auth import cmd_refresh
         log.warning("🔄 [TIKTOK] Token expirado (105002). Renovando...")
         cmd_refresh()
+
+        # cmd_refresh grava no .env — que NAO existe na nuvem. Sem persistir
+        # aqui, o valor novo morre no proximo restart e o 105002 volta.
+        try:
+            import os as _os
+            from core_tiktok_token_store import salvar
+            salvar(
+                _os.getenv("TIKTOK_ACCESS_TOKEN", ""),
+                _os.getenv("TIKTOK_REFRESH_TOKEN", ""),
+                int(_os.getenv("TIKTOK_ACCESS_TOKEN_EXPIRE", "0") or 0),
+            )
+        except Exception as exc:
+            log.warning("Nao persisti o token novo no Supabase: %s", exc)
+
         _obter_token_atual()
         return True
     except Exception as exc:
