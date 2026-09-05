@@ -66,9 +66,40 @@ log = logging.getLogger(__name__)
 #
 # A faixa cresceu junto (7mm -> 10.5mm): 12pt + 10pt + respiro nao cabem em
 # 19.8pt, e forcar so' as fontes faria as duas linhas se sobreporem.
-FAIXA_NUMERO_PT = 10.5 / 25.4 * 72   # 10.5mm ≈ 29.8pt
+# 05/09: 10.5mm -> 12.5mm. Ao afastar o SKU da borda (MARGEM_RODAPE_PT
+# abaixo), as duas linhas passaram a se sobrepor dentro de 10.5mm. O calculo
+# de baixo pra cima -- margem + descida + corpo do SKU + respiro + descida +
+# corpo do #N -- pede 11.3mm no minimo; 12.5mm deixa ~2.7pt de respiro real.
+FAIXA_NUMERO_PT = 12.5 / 25.4 * 72   # 12.5mm ≈ 35.4pt
 FONTE_NUMERO = 12.0
 FONTE_SKU = 10.0
+
+# ⚠️ MARGEM DE SEGURANCA no rodape (Jota, 05/09/2026: "coloque um limite pra
+# evitar q ele trepe na pagina seguinte... esta saindo a parte do SKU na
+# etiqueta de baixo").
+#
+# A baseline do SKU era um valor FIXO que ignorava a descida da fonte (a perna
+# do "p", do "g"). Com fonte 10pt a descida come ~2.2pt e sobravam 1.8pt =
+# 0,64mm ate' a borda -- medido no PDF de 05/09. Em rolo continuo essa sobra
+# nao existe: a cabeca termica nao corta exatamente na picotagem e o texto
+# vaza para a etiqueta seguinte.
+#
+# 2.5mm da folga real sem encolher a etiqueta de forma perceptivel -- mesma
+# ordem da margem ja' usada em core_etiqueta_normalizar.MARGEM_PT.
+MARGEM_RODAPE_PT = 2.5 / 25.4 * 72   # 2.5mm ≈ 7.1pt
+
+# Fracao da altura da fonte ABAIXO da baseline (descida). 0.22 e' o tipico de
+# Helvetica; derivar disso mantem a folga correta se a fonte mudar de tamanho.
+DESCIDA_FONTE = 0.22
+
+
+def _baseline_sku(altura: float) -> float:
+    """Baseline do SKU: da BORDA para cima, descontando margem e descida.
+
+    NUNCA um valor fixo -- foi o fixo que deixou a perna das letras
+    encostando no papel e vazando para a etiqueta de baixo.
+    """
+    return altura - MARGEM_RODAPE_PT - (FONTE_SKU * DESCIDA_FONTE)
 COR = (0.0, 0.0, 0.0)
 COR_SKU = (0.30, 0.30, 0.30)
 
@@ -118,7 +149,7 @@ def _recompor_com_faixa_numero(doc, idx: int, texto_num: str, texto_sku: str = "
     if texto_sku:
         largura_sku = fitz.get_text_length(texto_sku, fontname="helv", fontsize=FONTE_SKU)
         x_sku = max(8, (largura - largura_sku) / 2)
-        y_sku = altura - 4.0
+        y_sku = _baseline_sku(altura)
         nova.insert_text(fitz.Point(x_sku, y_sku), texto_sku, fontsize=FONTE_SKU,
                          fontname="helv", color=COR_SKU)
 
@@ -514,7 +545,7 @@ def gerar(*, com_cartao: bool = False,
                     if texto_sku:
                         largura_sku = fitz.get_text_length(texto_sku, fontname="helv", fontsize=FONTE_SKU)
                         x_sku = max(8, (largura - largura_sku) / 2)
-                        y_sku = altura - 4.0
+                        y_sku = _baseline_sku(altura)
                         nova_pag.insert_text(fitz.Point(x_sku, y_sku), texto_sku, fontsize=FONTE_SKU, fontname="helv", color=COR_SKU)
                 else:
                     # Demais páginas (ex: cartão de agradecimento) entram sem faixa
