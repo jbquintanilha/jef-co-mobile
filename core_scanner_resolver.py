@@ -465,6 +465,18 @@ def _status_legivel(status: str, plataforma: str) -> str:
         if s in ("PAID", "CONFIRMED", "PAYMENT_REQUIRED"):
             return "PENDENTE"
         return "DESCONHECIDO"
+    # ⚠️ TikTok tambem precisa de branch proprio (07/09). Sem ele todo pedido
+    # do canal mostrava "DESCONHECIDO" na tela mesmo com a API respondendo
+    # certo: os status crus ("AWAITING_COLLECTION", "IN_TRANSIT"...) nao sao
+    # numeros do Olist nem rotulos da Shopee, entao caiam no fallback.
+    # Cosmetico -- `cancelado` sempre esteve correto -- mas confundia quem le'.
+    if plataforma == "tiktok":
+        if s in ("DELIVERED", "COMPLETED", "IN_TRANSIT", "SHIPPED"):
+            return "ENVIADO"
+        if s in ("UNPAID", "ON_HOLD", "AWAITING_SHIPMENT",
+                 "AWAITING_COLLECTION", "PARTIALLY_SHIPPING"):
+            return "PENDENTE"
+        return "DESCONHECIDO"
     if plataforma == "olist":
         nome = _situacao_olist_nome(s)
         if not nome:
@@ -701,6 +713,59 @@ def verificar_cancelamento(pedido_ecommerce: str, canal: str,
     return {k: v for k, v in resultado.items() if k != "_ts"}
 
 
+# Pedidos cuja verificacao ja' foi disparada -- evita abrir uma thread nova
+# a cada rerun do Streamlit enquanto a primeira ainda nao respondeu.
+_verificando: set = set()
+_lock_verificando = threading.Lock()
+
+
+def status_em_cache(pedido_ecommerce: str, canal: str) -> dict | None:
+    """Status JA' conhecido, sem tocar na rede. None se ainda nao veio.
+
+    Le' o mesmo `_cache_status` que `verificar_cancelamento` alimenta -- por
+    isso a segunda bipagem do mesmo pedido ja' mostra o status na hora.
+    """
+    if not pedido_ecommerce:
+        return None
+    plataforma = (canal or "").strip().lower() or "olist"
+    chave = f"{plataforma}:{pedido_ecommerce}"
+    hit = _cache_status.get(chave)
+    if hit and (time.time() - hit["_ts"]) < _CACHE_STATUS_TTL:
+        return {k: v for k, v in hit.items() if k != "_ts"}
+    return None
+
+
+def agendar_verificacao(pedido_ecommerce: str, canal: str, *,
+                        _pedido_olist: dict | None = None) -> None:
+    """Dispara a consulta de cancelamento em background. Nunca levanta.
+
+    O resultado cai no `_cache_status`; quem chamar `status_em_cache` depois
+    (o rerun seguinte da tela) encontra o status pronto.
+    """
+    if not pedido_ecommerce:
+        return
+    plataforma = (canal or "").strip().lower() or "olist"
+    chave = f"{plataforma}:{pedido_ecommerce}"
+
+    with _lock_verificando:
+        if chave in _verificando:
+            return                      # ja' tem thread cuidando deste
+        _verificando.add(chave)
+
+    def _rodar():
+        try:
+            verificar_cancelamento(pedido_ecommerce, canal,
+                                   _pedido_olist=_pedido_olist)
+        except Exception as exc:        # nunca derruba a bancada
+            log.warning("verificacao em background falhou (%s): %s",
+                        pedido_ecommerce, exc)
+        finally:
+            with _lock_verificando:
+                _verificando.discard(chave)
+
+    threading.Thread(target=_rodar, daemon=True).start()
+
+
 def _anexar_status(result: dict | None, *, pedido_olist: dict | None = None) -> dict | None:
     """Anexa os campos de cancelamento ao dict de resultado do scanner.
 
@@ -719,9 +784,29 @@ def _anexar_status(result: dict | None, *, pedido_olist: dict | None = None) -> 
         })
         return result
 
-    info = verificar_cancelamento(
-        result["pedido_ecommerce"], result["canal"], _pedido_olist=pedido_olist
-    )
+    # ⚠️ NAO BLOQUEIA A BIPAGEM (Jota, 07/09: "esta demorando muito a
+    # carregar as informacoes"). Medido: o SQLite responde em 2ms, mas a
+    # consulta de cancelamento na API do marketplace levava 2,0s (TikTok),
+    # 3,1s (Shopee) e 3,6s (ML) -- 99,8% do tempo total, a cada etiqueta.
+    #
+    # A verificacao continua existindo porque e' necessaria: em 26/08 dois
+    # pedidos cancelados no TikTok seguiam "em separacao" no Olist, e embalar
+    # cancelado e' prejuizo. O que muda e' QUANDO: a ficha aparece na hora
+    # (dado local) e o status chega depois, a tempo de avisar antes de fechar
+    # a caixa. Bipagem seguinte do mesmo pedido ja' pega do cache (TTL 10min).
+    info = status_em_cache(result["pedido_ecommerce"], result["canal"])
+    if info is None:
+        agendar_verificacao(result["pedido_ecommerce"], result["canal"],
+                            _pedido_olist=pedido_olist)
+        result.update({
+            "cancelado": False,
+            "status_pedido": "VERIFICANDO",
+            "alerta": None,
+            "cancelado_em": None,
+            "motivo_cancelamento": None,
+            "status_pendente": True,     # a tela usa isto pra re-perguntar
+        })
+        return result
     cancelado = bool(info.get("cancelado"))
     status = info.get("status") or "DESCONHECIDO"
     alerta = None

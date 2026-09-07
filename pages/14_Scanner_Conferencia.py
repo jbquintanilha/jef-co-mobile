@@ -969,6 +969,29 @@ if res and res.get("encontrado"):
     # nome ajuda a casar a caixa com a etiqueta, e o sobrenome nao acrescenta.
     primeiro_nome = (res.get("cliente") or "").strip().split(" ")[0] or "—"
 
+    # ⚠️ A verificacao de cancelamento roda em BACKGROUND (ver
+    # core_scanner_resolver._anexar_status): a ficha aparece na hora com o
+    # dado local (2ms) em vez de esperar 2-3,6s da API do marketplace.
+    # Enquanto a resposta nao chega, re-consulta sozinho a cada 1,5s ate' o
+    # status ficar pronto -- o operador ja' separa a peca nesse meio tempo, e
+    # o alerta de cancelado aparece a tempo de nao fechar a caixa.
+    if res.get("status_pendente"):
+        import core_scanner_resolver as _rsv
+
+        @st.fragment(run_every=1.5)
+        def _aguardar_status():
+            info = _rsv.status_em_cache(res.get("pedido_ecommerce") or "",
+                                        res.get("canal") or "")
+            if info is None:
+                st.caption("🔄 Verificando cancelamento na plataforma…")
+                return
+            # Chegou: reprocessa o codigo (agora o cache responde na hora) e
+            # redesenha a ficha ja' com o status definitivo.
+            _processar_codigo(st.session_state.scanner_ultimo_codigo)
+            st.rerun()
+
+        _aguardar_status()
+
     if res.get("cancelado"):
         # ----- 🚨 PEDIDO CANCELADO — NÃO DESPACHAR -----
         canal_nome = res.get("canal") or "plataforma"
