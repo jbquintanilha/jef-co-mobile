@@ -219,6 +219,31 @@ def atualizar_separacao(*, reset: bool = False) -> None:
                     + " — entraram na fila só com os dados do resumo.",
                 )
 
+            # ⚠️ Sem isto a Fase 6 (Bipagem) buscava num indice SEPARADO
+            # (SQLite `rastreio_pedidos`, populado so' pela pagina do Scanner
+            # de Conferencia) que este sync nunca tocava — pedido aparecia
+            # certinho aqui na fila mas a pistola dizia "nao encontrado"
+            # (achado real, Jota, 13-14/09: pedido #827 sincronizado aqui e
+            # invisivel na Fase 6 ate' rodar o populator manualmente). Mesma
+            # fonte (Olist), um so' clique — nao faz sentido pedir duas vezes.
+            #
+            # `force=False`: o proprio modulo tem throttle de 300s
+            # (INTERVALO_MINIMO_SEG). force=True revarreria Shopee+ML+TikTok
+            # pedido a pedido (1-3 chamadas HTTP sequenciais cada) toda vez
+            # que a Fase 1 sincroniza — medido em producao: so' o Shopee (44
+            # pedidos pendentes) passou de 400s sem terminar. force=False
+            # deixa o throttle decidir (so' revarre se ja passaram 5min
+            # desde o ultimo refresh), sem travar a tela a cada clique.
+            try:
+                import core_scanner_populator as populator
+                populator.popular_todos(force=False)
+            except Exception as exc:
+                registrar_erro(
+                    "2️⃣ Separar",
+                    "Índice de bipagem (Fase 6) não atualizou",
+                    f"A fila sincronizou normalmente, mas popular_todos() falhou: {exc}",
+                )
+
             if not pedidos:
                 st.session_state.dados_separacao = None
                 st.session_state.pedidos_brutos = []
