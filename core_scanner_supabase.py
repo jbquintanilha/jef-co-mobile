@@ -93,6 +93,7 @@ def salvar_rastreio_nuvem(dados: dict[str, Any]) -> bool:
         "alerta_volume": dados.get("alerta_volume", ""),
         "shipment_id": str(dados.get("shipment_id", "") or ""),
         "pack_id": str(dados.get("pack_id", "") or ""),
+        "is_sample": bool(dados.get("is_sample", False)),
         "atualizado_em": datetime.now().isoformat(),
     }
 

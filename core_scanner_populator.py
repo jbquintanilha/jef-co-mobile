@@ -479,6 +479,8 @@ def popular_tiktok(*, force: bool = False, vistos: set | None = None) -> int:
                             _it["imagem_url"] = _ref.get("imagem_url") or ""
                         if _ref.get("variacao"):
                             _it["variacao"] = _ref["variacao"]
+                if reg:
+                    reg["is_sample"] = ped.get("is_sample", False)
             else:
                 # Sem correspondencia no Olist: usa os dados da propria API.
                 sku = ped.get("seller_sku") or ""
@@ -495,6 +497,7 @@ def popular_tiktok(*, force: bool = False, vistos: set | None = None) -> int:
                     "peso_kg": None,
                     "imagem_url": imagem_url or None,
                     "itens": itens_tk,
+                    "is_sample": ped.get("is_sample", False),
                 }
             if reg and db.upsert_rastreio(reg):
                 inseridos += 1

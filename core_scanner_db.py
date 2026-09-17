@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS rastreio_pedidos (
     alerta_volume TEXT,              -- '' | 'mesmo_kit_multiplo' | 'multi_itens' (core_separacao)
     shipment_id TEXT,                -- ML: o code128 GRANDE da etiqueta (47828318513)
     pack_id TEXT,                    -- ML: agrupador de varios pedidos (2000014650915375)
+    is_sample INTEGER DEFAULT 0,     -- TikTok: amostra gratis p/ criador (is_sample_order)
     criado_em TEXT DEFAULT (datetime('now','localtime')),
     atualizado_em TEXT DEFAULT (datetime('now','localtime')),
     UNIQUE(tracking, canal)
@@ -159,6 +160,11 @@ def init_db() -> None:
                 conn.execute("ALTER TABLE rastreio_pedidos ADD COLUMN numero_nf TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_rastreio_chave_nfe ON rastreio_pedidos(chave_nfe)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_rastreio_numero_nf ON rastreio_pedidos(numero_nf)")
+            # v1.9 (17/09): amostra gratis TikTok p/ criador (programa de
+            # afiliados) -- destaque na bancada pra capricho extra (embalagem,
+            # cartao), ja que e' vitrine da marca, nao venda comum.
+            if "is_sample" not in cols_rastreio:
+                conn.execute("ALTER TABLE rastreio_pedidos ADD COLUMN is_sample INTEGER DEFAULT 0")
         log.info("Banco do scanner pronto: %s", DB_PATH)
     except sqlite3.Error as e:  # pragma: no cover - defensivo
         log.error("Falha ao inicializar banco do scanner: %s", e)
@@ -231,9 +237,9 @@ def upsert_rastreio(registro: dict) -> bool:
                     (tracking, canal, pedido_ecommerce, sku_principal,
                      produto_nome, cor, kit, cliente_nome, cep, peso_kg,
                      imagem_url, itens_json, alerta_volume, shipment_id, pack_id,
-                     chave_nfe, numero_nf,
+                     chave_nfe, numero_nf, is_sample,
                      criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         datetime('now','localtime'), datetime('now','localtime'))
                 ON CONFLICT(tracking, canal) DO UPDATE SET
                     pedido_ecommerce = excluded.pedido_ecommerce,
@@ -251,6 +257,7 @@ def upsert_rastreio(registro: dict) -> bool:
                     imagem_url       = COALESCE(excluded.imagem_url, rastreio_pedidos.imagem_url),
                     itens_json       = COALESCE(excluded.itens_json, rastreio_pedidos.itens_json),
                     alerta_volume    = COALESCE(NULLIF(excluded.alerta_volume, ''), rastreio_pedidos.alerta_volume),
+                    is_sample        = excluded.is_sample,
                     atualizado_em    = datetime('now','localtime')
                 """,
                 (
@@ -271,6 +278,7 @@ def upsert_rastreio(registro: dict) -> bool:
                     normalizar_codigo(str(registro.get("pack_id") or "")) or None,
                     normalizar_codigo(str(registro.get("chave_nfe") or "")) or None,
                     str(registro.get("numero_nf") or "").strip() or None,
+                    1 if registro.get("is_sample") else 0,
                 ),
             )
         _espelhar_na_nuvem(registro)

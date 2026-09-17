@@ -153,6 +153,9 @@ def _achatar(pedido: dict) -> dict:
         "cliente": endereco.get("name") or pedido.get("cpf_name") or "",
         "cep": (endereco.get("postal_code") or "").strip(),
         "shipping_provider": pedido.get("shipping_provider") or "",
+        # Amostra grátis enviada a criador (programa de afiliados) — vitrine
+        # da marca, vale capricho extra na bancada (cartão, embalagem).
+        "is_sample": bool(pedido.get("is_sample_order")),
     }
 
 

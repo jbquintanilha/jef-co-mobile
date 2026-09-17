@@ -1060,6 +1060,20 @@ if res and res.get("encontrado"):
         if res.get("status_pedido") == "NAO_VERIFICADO":
             st.warning(res.get("alerta") or "⚠️ Status do pedido não verificado. Confirme antes de enviar.")
 
+        if res.get("is_sample"):
+            # Amostra gratis p/ criador (programa de afiliados TikTok) — vitrine
+            # da marca, vale capricho extra (cartao, embalagem) na bancada.
+            _render_html(
+                '<div style="background:#3b0764; border:2.5px solid #a855f7; border-radius:12px; '
+                'padding:14px 16px; margin:10px 0; display:flex; align-items:center; gap:10px;">'
+                '<span style="font-size:28px;">🎁</span>'
+                '<div>'
+                '<div style="font-size:18px; font-weight:900; color:#e9d5ff;">AMOSTRA — CRIADOR TIKTOK</div>'
+                '<div style="font-size:13px; color:#d8b4fe; margin-top:2px;">Vitrine da marca — capricha na embalagem.</div>'
+                '</div>'
+                '</div>'
+            )
+
         # Cor do destaque conforme o genero da peca
         _fem = res.get("genero") == "fem"
         cor_destaque = "#f472b6" if _fem else "#34d399"
