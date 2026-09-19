@@ -97,19 +97,30 @@ def salvar_rastreio_nuvem(dados: dict[str, Any]) -> bool:
         "atualizado_em": datetime.now().isoformat(),
     }
 
-    # Upsert com header Prefer: resolution=merge-duplicates
+    # 🔴 `?on_conflict=tracking` e' OBRIGATORIO (achado 19/09).
+    # `Prefer: resolution=merge-duplicates` sozinho so' resolve conflito na
+    # PRIMARY KEY -- aqui a PK e' `id` e `tracking` tem uma UNIQUE separada
+    # (`rastreio_pedidos_expedicao_tracking_key`). Sem apontar a coluna, todo
+    # re-espelhamento de pedido ja' existente voltava 409 (duplicate key) e
+    # era engolido pelo retry: o indice na nuvem so' aceitava INSERCAO nova e
+    # nunca atualizava. Foi o que deixou 5 pedidos invisiveis pro celular.
     headers = _headers()
     headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
-    url = f"{SUPABASE_URL}/rest/v1/rastreio_pedidos_expedicao"
+    url = (f"{SUPABASE_URL}/rest/v1/rastreio_pedidos_expedicao"
+           "?on_conflict=tracking")
 
+    ultimo = ""
     for _, delay in enumerate(RETRY_DELAYS):
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=30)
             if r.status_code in (200, 201, 204):
                 return True
-            time.sleep(delay)
-        except Exception:
-            time.sleep(delay)
+            ultimo = f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as e:
+            ultimo = str(e)
+        time.sleep(delay)
+    # Sem isto a falha sumia: o chamador so' via `False`, sem saber o porque.
+    log.warning("Espelhamento de %s falhou: %s", payload["tracking"], ultimo)
     return False
 
 

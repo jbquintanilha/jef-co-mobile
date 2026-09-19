@@ -516,7 +516,14 @@ def popular_todos(*, force: bool = False) -> dict:
     global _ULTIMO_REFRESH
     if not force and not _pode_refresh():
         return {"shopee": 0, "ml": 0, "tiktok": 0, "removidos": 0,
-                "total": 0, "skip": True}
+                "total": 0, "skip": True, "espelho_reenviados": 0,
+                "espelho_pendentes": db.contar_espelho_pendente()}
+
+    # Drena o que nao conseguiu espelhar em ciclos anteriores. Vem ANTES da
+    # varredura de proposito: se o pedido ja' foi despachado, ele sai do
+    # escopo e a poda o remove do indice -- mas o celular ainda precisa
+    # enxerga-lo pra bipar o que esta' na bancada agora.
+    espelho = db.drenar_fila_espelho()
 
     # Conjunto dos trackings que seguem PENDENTES nas plataformas nesta rodada.
     # E' o que autoriza a poda: quem nao aparece aqui ja foi despachado.
@@ -534,6 +541,9 @@ def popular_todos(*, force: bool = False) -> dict:
     removidos += limpar_antigos()
     contagem["removidos"] = removidos
     contagem["skip"] = False
+    # Reconta no fim: a varredura acima pode ter enfileirado novas falhas.
+    contagem["espelho_reenviados"] = espelho.get("enviados", 0)
+    contagem["espelho_pendentes"] = db.contar_espelho_pendente()
     _ULTIMO_REFRESH = time.monotonic()
     return contagem
 

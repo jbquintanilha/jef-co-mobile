@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS rastreio_pedidos (
     UNIQUE(tracking, canal)
 );
 
+-- Fila de re-tentativa do espelhamento na nuvem. O registro fica aqui
+-- enquanto o Supabase nao aceitou; `popular_todos()` drena no inicio de
+-- cada ciclo. Sem isto, um pedido que falhou ao espelhar sumia do radar
+-- assim que saia do escopo do populator (ja' despachado) e ficava
+-- invisivel pro celular pra sempre.
+CREATE TABLE IF NOT EXISTS espelho_pendente (
+    tracking TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,   -- o registro inteiro, pronto pra reenviar
+    tentativas INTEGER DEFAULT 1,
+    ultimo_erro TEXT,
+    criado_em TEXT DEFAULT (datetime('now','localtime')),
+    atualizado_em TEXT DEFAULT (datetime('now','localtime'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_rastreio_tracking ON rastreio_pedidos(tracking);
 CREATE INDEX IF NOT EXISTS idx_rastreio_pedido ON rastreio_pedidos(pedido_ecommerce);
 -- ⚠️ Os indices de shipment_id/pack_id NAO ficam aqui: em banco antigo as
@@ -165,6 +179,19 @@ def init_db() -> None:
             # cartao), ja que e' vitrine da marca, nao venda comum.
             if "is_sample" not in cols_rastreio:
                 conn.execute("ALTER TABLE rastreio_pedidos ADD COLUMN is_sample INTEGER DEFAULT 0")
+            # v2.0 (19/09): fila de re-tentativa do espelhamento na nuvem.
+            # Vem no _SCHEMA, mas banco antigo precisa do CREATE aqui tambem
+            # (o executescript ja' rodou antes desta migracao existir).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS espelho_pendente (
+                    tracking TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    tentativas INTEGER DEFAULT 1,
+                    ultimo_erro TEXT,
+                    criado_em TEXT DEFAULT (datetime('now','localtime')),
+                    atualizado_em TEXT DEFAULT (datetime('now','localtime'))
+                )
+            """)
         log.info("Banco do scanner pronto: %s", DB_PATH)
     except sqlite3.Error as e:  # pragma: no cover - defensivo
         log.error("Falha ao inicializar banco do scanner: %s", e)
@@ -307,17 +334,119 @@ def _espelhar_na_nuvem(registro: dict) -> None:
         return
     if not (getattr(nuvem, "SUPABASE_URL", "") and getattr(nuvem, "SUPABASE_KEY", "")):
         return
+    payload = dict(registro)
+    # A nuvem guarda os itens ja' serializados (o SQLite serializa na hora
+    # do INSERT); sem isso o mobile recebe a lista crua e nao sabe ler.
+    if "itens" in payload and "itens_json" not in payload:
+        payload["itens_json"] = _serializar_itens(payload.get("itens")) or "[]"
+
     try:
-        payload = dict(registro)
-        # A nuvem guarda os itens ja' serializados (o SQLite serializa na hora
-        # do INSERT); sem isso o mobile recebe a lista crua e nao sabe ler.
-        if "itens" in payload and "itens_json" not in payload:
-            payload["itens_json"] = _serializar_itens(payload.get("itens")) or "[]"
-        if not nuvem.salvar_rastreio_nuvem(payload):
-            log.warning("Nao consegui espelhar %s na nuvem (segue so' no indice local).",
-                        registro.get("tracking"))
+        if nuvem.salvar_rastreio_nuvem(payload):
+            _remover_da_fila_espelho(payload.get("tracking"))
+            return
+        erro = "salvar_rastreio_nuvem devolveu False"
     except Exception as e:
-        log.warning("Falha ao espelhar %s na nuvem: %s", registro.get("tracking"), e)
+        erro = str(e)
+
+    log.warning("Nao consegui espelhar %s na nuvem: %s (entra na fila de re-tentativa).",
+                payload.get("tracking"), erro)
+    _enfileirar_espelho(payload, erro)
+
+
+# ------------------------------------------------------------------ #
+# Fila de re-tentativa do espelhamento
+# ------------------------------------------------------------------ #
+def _enfileirar_espelho(payload: dict, erro: str) -> None:
+    """Guarda o registro que nao espelhou, pra tentar de novo depois."""
+    tracking = normalizar_codigo(str(payload.get("tracking") or ""))
+    if not tracking:
+        return
+    try:
+        # `itens` pode conter objetos nao serializaveis; `itens_json` ja' cobre
+        # o mesmo dado em texto, entao descarta a versao crua.
+        limpo = {k: v for k, v in payload.items() if k != "itens"}
+        with _get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO espelho_pendente
+                    (tracking, payload_json, tentativas, ultimo_erro)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(tracking) DO UPDATE SET
+                    payload_json  = excluded.payload_json,
+                    tentativas    = espelho_pendente.tentativas + 1,
+                    ultimo_erro   = excluded.ultimo_erro,
+                    atualizado_em = datetime('now','localtime')
+                """,
+                (tracking, json.dumps(limpo, ensure_ascii=False), erro[:500]),
+            )
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        log.error("Nao consegui enfileirar %s pra re-espelhar: %s", tracking, e)
+
+
+def _remover_da_fila_espelho(tracking: str | None) -> None:
+    """Tira da fila depois que a nuvem aceitou."""
+    t = normalizar_codigo(str(tracking or ""))
+    if not t:
+        return
+    try:
+        with _get_conn() as conn:
+            conn.execute("DELETE FROM espelho_pendente WHERE tracking = ?", (t,))
+    except sqlite3.Error as e:
+        log.warning("Nao consegui limpar %s da fila de espelho: %s", t, e)
+
+
+def contar_espelho_pendente() -> int:
+    """Quantos registros ainda nao chegaram na nuvem. 0 se a tabela nao existir."""
+    try:
+        with _get_conn() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM espelho_pendente").fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.Error:
+        return 0
+
+
+def drenar_fila_espelho(*, limite: int = 200) -> dict:
+    """Reenvia pra nuvem tudo que ficou pendente. Chamado pelo populator.
+
+    Retorna {'pendentes': N_antes, 'enviados': N, 'restantes': N}.
+    Best-effort como o resto do espelhamento: o que falhar de novo continua
+    na fila (com `tentativas` incrementado) pro proximo ciclo.
+    """
+    try:
+        with _get_conn() as conn:
+            linhas = conn.execute(
+                "SELECT tracking, payload_json FROM espelho_pendente "
+                "ORDER BY atualizado_em LIMIT ?",
+                (limite,),
+            ).fetchall()
+    except sqlite3.Error as e:
+        log.warning("Nao consegui ler a fila de espelho: %s", e)
+        return {"pendentes": 0, "enviados": 0, "restantes": 0}
+
+    if not linhas:
+        return {"pendentes": 0, "enviados": 0, "restantes": 0}
+
+    tentados = 0
+    for linha in linhas:
+        try:
+            payload = json.loads(linha["payload_json"])
+        except (ValueError, TypeError):
+            # Payload corrompido nao tem conserto — tirar da fila evita
+            # tentar pra sempre a cada ciclo.
+            log.error("Payload invalido na fila de espelho (%s), descartando.",
+                      linha["tracking"])
+            _remover_da_fila_espelho(linha["tracking"])
+            continue
+        # `_espelhar_na_nuvem` tira da fila sozinho quando a nuvem aceita.
+        _espelhar_na_nuvem(payload)
+        tentados += 1
+
+    restantes = contar_espelho_pendente()
+    log.info("Fila de espelho: %d tentados, %d ainda pendentes.",
+             tentados, restantes)
+    return {"pendentes": len(linhas),
+            "enviados": max(tentados - restantes, 0),
+            "restantes": restantes}
 
 
 def buscar_por_tracking(tracking: str) -> dict | None:

@@ -28,8 +28,10 @@ As 7 fases (ordem definida pelo Jota):
    informacao — core_separacao_atomos.decompor_sku() so' le.
 """
 
+import logging
 import os
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -40,6 +42,8 @@ if str(_RAIZ) not in sys.path:
 import streamlit as st
 import pandas as pd
 import core_separacao as cs
+
+log = logging.getLogger(__name__)
 
 # separador_etiquetas vive em tools/ — sem isto o botao de imprimir quebra
 # com ModuleNotFoundError silencioso dentro do try/except.
@@ -180,6 +184,43 @@ max_pedidos = LIMITE_PEDIDOS
 st.session_state.pop("situacoes_sel", None)
 
 
+_POPULATOR_LOCK = threading.Lock()
+_POPULATOR_RODANDO = False
+
+
+def _disparar_populator_async() -> None:
+    """Atualiza o indice de bipagem (Fase 6) sem travar a tela.
+
+    Roda fora da thread da UI porque a varredura leva +120s na primeira
+    chamada de cada processo (ver comentario em `atualizar_separacao`).
+    Se ja' houver uma rodando, nao dispara outra — clicar duas vezes em
+    "Atualizar" nao deve multiplicar chamadas de API.
+    """
+    global _POPULATOR_RODANDO
+
+    with _POPULATOR_LOCK:
+        if _POPULATOR_RODANDO:
+            return
+        _POPULATOR_RODANDO = True
+
+    def _rodar() -> None:
+        global _POPULATOR_RODANDO
+        try:
+            import core_scanner_populator as populator
+            populator.popular_todos(force=False)
+        except Exception:
+            # Sem `registrar_erro` aqui: fora da thread da UI o Streamlit
+            # nao tem contexto de sessao. O log cobre a investigacao, e a
+            # Fase 6 avisa sozinha se o pedido nao estiver no indice.
+            log.exception("popular_todos() falhou em background")
+        finally:
+            with _POPULATOR_LOCK:
+                _POPULATOR_RODANDO = False
+
+    threading.Thread(target=_rodar, daemon=True,
+                     name="populator-bipagem").start()
+
+
 def atualizar_separacao(*, reset: bool = False) -> None:
     """Sincroniza a fila e remonta a lista de atomos.
 
@@ -196,18 +237,12 @@ def atualizar_separacao(*, reset: bool = False) -> None:
                                  max_pedidos=max_pedidos)
             pedidos = r["pedidos"]
 
-            # A situacao 4 pode estar vazia (ver SITUACAO_FALLBACK). Sem isto
-            # a tela dizia "0 pedidos" com 64 pedidos abertos no Olist.
-            if not pedidos:
-                r = sync.sincronizar(SITUACAO_FALLBACK, reset=reset,
-                                     max_pedidos=max_pedidos)
-                pedidos = r["pedidos"]
-                if pedidos:
-                    st.info(
-                        "ℹ️ Nenhum pedido em **Preparando envio** — usando "
-                        "**Em separação + Pronto para envio**. "
-                        "Os que já têm etiqueta emitida aparecem com 🏷️."
-                    )
+            # ⚠️ Aqui havia um fallback para `SITUACAO_FALLBACK` ([7], quando a
+            # situacao 4 vinha vazia). A constante foi removida ao unificar em
+            # `SITUACAO_PADRAO = [4, 7]`, mas a chamada ficou -- NameError que
+            # so' estourava quando a primeira busca voltava vazia (achado pelo
+            # Jota, 19/09). Nao ha' o que repor: [4, 7] ja' cobre os dois casos
+            # numa unica chamada.
 
             st.session_state["ultimo_sync"] = r
 
@@ -227,22 +262,16 @@ def atualizar_separacao(*, reset: bool = False) -> None:
             # invisivel na Fase 6 ate' rodar o populator manualmente). Mesma
             # fonte (Olist), um so' clique — nao faz sentido pedir duas vezes.
             #
-            # `force=False`: o proprio modulo tem throttle de 300s
-            # (INTERVALO_MINIMO_SEG). force=True revarreria Shopee+ML+TikTok
-            # pedido a pedido (1-3 chamadas HTTP sequenciais cada) toda vez
-            # que a Fase 1 sincroniza — medido em producao: so' o Shopee (44
-            # pedidos pendentes) passou de 400s sem terminar. force=False
-            # deixa o throttle decidir (so' revarre se ja passaram 5min
-            # desde o ultimo refresh), sem travar a tela a cada clique.
-            try:
-                import core_scanner_populator as populator
-                populator.popular_todos(force=False)
-            except Exception as exc:
-                registrar_erro(
-                    "2️⃣ Separar",
-                    "Índice de bipagem (Fase 6) não atualizou",
-                    f"A fila sincronizou normalmente, mas popular_todos() falhou: {exc}",
-                )
+            # 🔴 EM BACKGROUND desde 19/09. `force=False` NAO basta:
+            # `_ULTIMO_REFRESH` nasce 0.0 a cada processo novo, entao a
+            # PRIMEIRA chamada sempre passa pelo throttle e faz a varredura
+            # inteira (Shopee+ML+TikTok, 1-3 chamadas HTTP sequenciais por
+            # pedido) -- medido 18/09: +120s. Aqui na nuvem isso quase nunca
+            # aparecia porque o processo fica vivo horas e o primeiro acesso
+            # do dia ja' pagava o custo; no PC local, que reinicia direto,
+            # travava toda vez. A Fase 6 so' precisa do indice minutos
+            # depois, entao roda fora da thread da UI.
+            _disparar_populator_async()
 
             if not pedidos:
                 st.session_state.dados_separacao = None
@@ -844,6 +873,23 @@ if fase(0):
             atualizar_separacao()
     _alvo_f1, _pend_f1, _feitos_f1 = _widget_ondas("f1")
     st.session_state["_pend_olist_count"] = len(_pend_f1)
+
+    # Pedido que nao espelhou no Supabase existe so' no SQLite da maquina que
+    # rodou o populator — aqui no mobile ele cai no Olist ao vivo, que nao
+    # resolve rastreio J&T do TikTok, e a bipagem diz "nao encontrado". O
+    # aviso aparece pra o problema ser visto ANTES de ir pra bancada (achado
+    # 18/09: 5 pedidos ficaram invisiveis e so' descobrimos por acaso no log).
+    try:
+        import core_scanner_db as _db_espelho
+        _pend_nuvem = _db_espelho.contar_espelho_pendente()
+    except Exception:
+        _pend_nuvem = 0
+    if _pend_nuvem:
+        st.warning(
+            f"☁️ **{_pend_nuvem} pedido(s) ainda não espelhado(s) na nuvem** — "
+            "visíveis no PC da bancada, mas podem dar *não encontrado* ao "
+            "bipar aqui. O sistema tenta de novo sozinho a cada sincronização."
+        )
 
     # ---- CICLO: escolher AGORA quais pedidos entram, antes de baixar ------ #
     # Jota (25/08): "o ideal e' na fase um a gente fazer ja' essa selecao dos
