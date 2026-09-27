@@ -417,6 +417,11 @@ class OlistClient:
 
         Pre-condicao: o agrupamento precisa estar CONCLUIDO (concluir_expedicao).
         Retorna bytes do PDF ou None.
+
+        ⚠️ (27/09/2026) O endpoint responde JSON `{"urls": [...]}` com link
+        temporario para o PDF, nao o PDF em si. A versao anterior so' aceitava
+        content-type pdf e devolvia None calada — foi o que fez a etiqueta da
+        Amazon DBA parecer inexistente no Olist. Os dois formatos sao aceitos.
         """
         try:
             resp = self.request(
@@ -428,6 +433,15 @@ class OlistClient:
         ct = resp.headers.get("content-type", "")
         if "pdf" in ct.lower():
             return resp.content
+        try:
+            urls = (resp.json() or {}).get("urls") or []
+        except ValueError:
+            return None
+        if not urls:
+            return None
+        pdf = requests.get(urls[0], timeout=30)
+        if pdf.status_code == 200 and pdf.content[:4] == b"%PDF":
+            return pdf.content
         return None
 
 

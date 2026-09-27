@@ -266,6 +266,8 @@ def _normalizar_canal(canal_bruto: str) -> str:
         return "ml"
     if "tiktok" in c:
         return "tiktok"
+    if "amazon" in c:
+        return "amazon"
     return ""
 
 

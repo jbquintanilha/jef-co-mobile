@@ -960,10 +960,10 @@ if fase(0):
     # Filtro por marketplace (Jota, 29/08): sábado nao tem postagem TikTok,
     # so' Shopee — sem isto era baixar os 3 e ignorar o resto na mao.
     _canais_marcados = st.multiselect(
-        "Canais a incluir", options=["tiktok", "shopee", "ml"],
-        default=["tiktok", "shopee", "ml"], key="canais_baixar_tudo",
+        "Canais a incluir", options=["tiktok", "shopee", "ml", "amazon"],
+        default=["tiktok", "shopee", "ml", "amazon"], key="canais_baixar_tudo",
         format_func=lambda c: {"tiktok": "🎵 TikTok Shop", "shopee": "🛒 Shopee",
-                               "ml": "🟡 Mercado Livre"}[c],
+                               "ml": "🟡 Mercado Livre", "amazon": "📦 Amazon"}[c],
         help="Desmarque o que não vai postar hoje — o botão baixa só o "
              "que estiver marcado.",
     )
@@ -972,7 +972,7 @@ if fase(0):
 
     with c_tudo:
         _rotulo_btn = ("⚡ Baixar " + " + ".join(
-            {"tiktok": "TikTok", "shopee": "Shopee", "ml": "ML"}[c]
+            {"tiktok": "TikTok", "shopee": "Shopee", "ml": "ML", "amazon": "Amazon"}[c]
             for c in _canais_marcados)) if _canais_marcados else "⚡ Selecione ao menos 1 canal"
         if st.button(_rotulo_btn, type="primary",
                      use_container_width=True, key="btn_etq_tudo",

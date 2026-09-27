@@ -365,8 +365,8 @@ def gerar(*, com_cartao: bool = False,
 
     inicio = time.time()
 
-    # 1. Baixa os três canais (TikTok + Shopee + ML) em paralelo
-    baixado = todas.baixar_tudo(canais=["tiktok", "shopee", "ml"], com_cartao=com_cartao, somente=somente)
+    # 1. Baixa os canais (TikTok + Shopee + ML + Amazon) em paralelo
+    baixado = todas.baixar_tudo(canais=["tiktok", "shopee", "ml", "amazon"], com_cartao=com_cartao, somente=somente)
     if not baixado.get("pdf"):
         # Mesmas chaves do caminho feliz: a tela le `resumo` e `erros` sem
         # checar, e um dict curto aqui quebraria a pagina com KeyError.
@@ -382,7 +382,7 @@ def gerar(*, com_cartao: bool = False,
     mapa_tt = _mapa_tiktok()
     arquivos: list[tuple[str, str]] = []   # (caminho, numero_do_pedido)
 
-    for canal in ("tiktok", "shopee", "ml"):
+    for canal in ("tiktok", "shopee", "ml", "amazon"):
         info = (baixado.get("por_canal") or {}).get(canal) or {}
         arqs_canal = info.get("arquivos") or []
         # Se nao houver arquivos individuais mas houver PDF consolidado do canal

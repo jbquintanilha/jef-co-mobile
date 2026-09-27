@@ -95,6 +95,8 @@ def _canal_curto(canal: str) -> str:
         return "TTK"
     if "MERCADO" in c or c == "ML":
         return "ML"
+    if "AMAZON" in c:
+        return "AMZ"
     return (c[:3] or "?")
 
 

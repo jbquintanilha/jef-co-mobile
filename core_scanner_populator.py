@@ -403,6 +403,42 @@ def popular_ml(*, force: bool = False, vistos: set | None = None) -> int:
         return 0
 
 
+def popular_amazon(*, force: bool = False, vistos: set | None = None) -> int:
+    """Varre pedidos Amazon abertos no Olist e persiste o rastreio no indice.
+
+    O Olist nao preenche `codigoRastreio` na expedicao da Amazon DBA; o codigo
+    (TBR...) sai do texto da propria etiqueta, que o Olist entrega. Ver
+    `core_etiquetas_amazon_olist.rastreios_pendentes` — ele guarda o rastreio
+    por nota e so' baixa etiqueta de nota nova.
+    """
+    if not force and not _pode_refresh():
+        return 0
+    inseridos = 0
+    try:
+        import core_etiquetas_amazon_olist as amz
+
+        client = _client_olist()
+        por_id = {p.get("id"): p for p in _pedidos_olist()}
+        for item in amz.rastreios_pendentes(client):
+            p = por_id.get(item["id_olist"])
+            if not p:
+                continue
+            chave = sanitizar_codigo(item["rastreio"]) or item["rastreio"]
+            try:
+                reg = _registro_do_pedido_olist(client, p, canal="amazon",
+                                                tracking=chave)
+                if reg and db.upsert_rastreio(reg):
+                    inseridos += 1
+            except Exception as e:
+                log.warning("Amazon %s: %s", item["pedido"], e)
+            if vistos is not None:
+                vistos.add(db.normalizar_codigo(chave))
+        return inseridos
+    except Exception as e:
+        log.error("Falha ao popular Amazon: %s", e)
+        return 0
+
+
 def popular_tiktok(*, force: bool = False, vistos: set | None = None) -> int:
     """Varre pedidos do TikTok Shop e persiste o tracking no indice.
 
@@ -515,7 +551,7 @@ def popular_todos(*, force: bool = False) -> dict:
     """
     global _ULTIMO_REFRESH
     if not force and not _pode_refresh():
-        return {"shopee": 0, "ml": 0, "tiktok": 0, "removidos": 0,
+        return {"shopee": 0, "ml": 0, "tiktok": 0, "amazon": 0, "removidos": 0,
                 "total": 0, "skip": True, "espelho_reenviados": 0,
                 "espelho_pendentes": db.contar_espelho_pendente()}
 
@@ -532,6 +568,7 @@ def popular_todos(*, force: bool = False) -> dict:
         "shopee": popular_shopee(force=True, vistos=vistos),
         "ml": popular_ml(force=True, vistos=vistos),
         "tiktok": popular_tiktok(force=True, vistos=vistos),
+        "amazon": popular_amazon(force=True, vistos=vistos),
     }
     contagem["total"] = sum(contagem.values())
 

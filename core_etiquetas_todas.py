@@ -97,10 +97,19 @@ def _baixar_canal(canal: str, somente: set[str] | None = None) -> dict[str, Any]
             import core_etiquetas_ml_api as api
             ids = _envios_filtrados_ml(somente) if somente is not None else None
             r = api.baixar_etiquetas(shipment_ids=ids)
-        else:
+        elif canal == "amazon":
+            # Numero do pedido Amazon ja' e' o numero_ecommerce: o filtro da
+            # onda passa direto, sem traducao.
+            import core_etiquetas_amazon_olist as api
+            r = api.baixar_etiquetas(pedidos=sorted(somente) if somente is not None else None)
+        elif canal == "tiktok":
             import core_etiquetas_tiktok_api as api
             ids = _pacotes_filtrados_tiktok(somente) if somente is not None else None
             r = api.baixar_etiquetas(package_ids=ids)
+        else:
+            # Antes era `else: tiktok` — um canal novo ou digitado errado
+            # baixava as etiquetas do TikTok em silencio.
+            raise ValueError(f"canal desconhecido: {canal!r}")
         r["canal"] = canal
         r["segundos"] = round(time.time() - inicio, 1)
         return r

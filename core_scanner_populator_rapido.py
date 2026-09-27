@@ -188,6 +188,7 @@ def popular_todos_rapido(*, force: bool = True) -> dict[str, Any]:
     vistos_shopee: set[str] = set()
     vistos_tiktok: set[str] = set()
     vistos_ml: set[str] = set()
+    vistos_amazon: set[str] = set()
 
     def _shopee() -> int:
         return _rodar_canal(grupos["shopee"], _um_shopee, cliente, vistos_shopee)
@@ -206,11 +207,22 @@ def popular_todos_rapido(*, force: bool = True) -> dict[str, Any]:
             log.error("ML falhou: %s", exc)
             return 0
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    # Amazon entra na mesma varredura: sem ela, o rastreio da Amazon ficaria
+    # fora de `vistos` e a poda abaixo apagaria o pedido do indice a cada
+    # "Atualizar base" do Scanner.
+    def _amazon() -> int:
+        try:
+            return orig.popular_amazon(force=True, vistos=vistos_amazon)
+        except Exception as exc:
+            log.error("Amazon falhou: %s", exc)
+            return 0
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futuros = {
             "shopee": executor.submit(_shopee),
             "tiktok": executor.submit(_tiktok),
             "ml": executor.submit(_ml),
+            "amazon": executor.submit(_amazon),
         }
         for canal, futuro in futuros.items():
             try:
@@ -219,7 +231,7 @@ def popular_todos_rapido(*, force: bool = True) -> dict[str, Any]:
                 log.error("Canal %s falhou: %s", canal, exc)
                 contagem[canal] = 0
 
-    vistos |= vistos_shopee | vistos_tiktok | vistos_ml
+    vistos |= vistos_shopee | vistos_tiktok | vistos_ml | vistos_amazon
 
     contagem["total"] = sum(v for v in contagem.values() if isinstance(v, int))
 
