@@ -828,8 +828,21 @@ _modo = st.radio(
 
 @st.fragment
 def _bloco_bipagem_rapida() -> None:
-    """Radio+camera+form isolados num fragment -- rerun so' daqui, nao da
-    pagina inteira. So' usado no modo '⚡ Câmera rápida'."""
+    """Radio+camera+form do modo '⚡ Câmera rápida'.
+
+    ⚠️ HONESTIDADE TECNICA (28/09): este fragment NAO isola o rerun de
+    verdade hoje. `st.rerun()` sem `scope="fragment"` dispara rerun de APP
+    INTEIRO mesmo de dentro de um fragment (confirmado na doc oficial:
+    https://docs.streamlit.io/develop/api-reference/execution-flow/st.fragment).
+    Como a ficha do produto mora fora deste fragment, mais abaixo na pagina,
+    e so' e' redesenhada num rerun de app inteiro, este form e' obrigado a
+    usar `st.rerun()` simples -- redesenha TUDO, igual aos outros 2 modos,
+    sem isolamento nenhum.
+
+    O ganho real deste modo hoje e' SO': resolucao de camera maior (foco
+    melhor) + toggle de leitura continua sem clique. NAO e' mais rapido no
+    rerun em si.
+    """
     _leitura_continua = st.toggle(
         "Leitura contínua (sem clicar a cada etiqueta)",
         value=False, key="cam_rapida_continua",
@@ -857,7 +870,11 @@ def _bloco_bipagem_rapida() -> None:
                                  type="primary"):
             if codigo_digitado and codigo_digitado.strip():
                 _processar_codigo(codigo_digitado)
-                st.rerun(scope="fragment")
+                # ⚠️ Achado real (28/09, teste do Jota: "leu, mas nao
+                # carregou — tela ficou vazia sem feedback"). Precisa ser
+                # `st.rerun()` simples: a ficha do produto mora fora deste
+                # fragment e so' redesenha com rerun de app inteiro.
+                st.rerun()
 
 
 if _modo.startswith("⚡"):
