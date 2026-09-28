@@ -178,6 +178,40 @@ st.markdown(
     .scanner-tag-tiktok { background: linear-gradient(135deg, #09090b, #18181b); color: #00f2fe; border: 1.5px solid #00f2fe; box-shadow: 0 0 10px rgba(0, 242, 254, 0.35); }
     .scanner-tag-correios { background: linear-gradient(135deg, #1d4ed8, #2563eb); color: #ffffff; border: 1px solid #3b82f6; }
     .scanner-tag-manual { background: linear-gradient(135deg, #475569, #64748b); color: #ffffff; }
+    .scanner-tag-amazon { background: linear-gradient(135deg, #232f3e, #131a22); color: #ff9900; border: 1.5px solid #ff9900; }
+
+    /* ---- Ficha COMPACTA (modo "⚡ Câmera rápida") -- cabe no celular sem rolar.
+       Revisado por DeepSeek + Gemini 3.8 (Sala de Guerra, 28/09). */
+    .fc-card { background: linear-gradient(145deg, #064e3b 0%, #022c22 100%);
+        border: 2px solid #10b981; border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+    .fc-topo { display:flex; justify-content:space-between; align-items:center; gap:6px; }
+    .fc-titulo { font-size: 16px; font-weight: 900; color: #f8fafc; }
+    .fc-avisos { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+    .fc-aviso { font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 10px; }
+    .fc-prod { display:flex; gap:10px; align-items:center; margin-top:8px; }
+    .fc-foto { width:64px; height:64px; border-radius:10px; object-fit:cover; flex-shrink:0; }
+    .fc-nome { font-size: 16px; font-weight: 900; line-height:1.2;
+        display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .fc-qtd { font-size: 34px; font-weight: 900; line-height:1; flex-shrink:0; margin-left:auto; }
+    .fc-chips { display:grid; grid-template-columns: repeat(3, 1fr); gap:6px; margin-top:8px; }
+    .fc-chip { border-radius:8px; padding:5px 8px; }
+    .fc-chip-lbl { font-size:10px; font-weight:700; color:#94a3b8; text-transform:uppercase; }
+    .fc-chip-val { font-size:18px; font-weight:900; line-height:1.15;
+        display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+    .fc-swatch { display:inline-block; width:14px; height:14px; border-radius:3px;
+        border:1px solid #cbd5e1; margin-right:5px; vertical-align:-2px; }
+    .fc-itens { max-height: 150px; overflow-y:auto; margin-top:8px; background:#450a0a;
+        border:2px solid #ef4444; border-radius:10px; padding:6px 8px; }
+    .fc-itens-tit { font-size:13px; font-weight:900; color:#fca5a5; margin-bottom:4px; }
+    .fc-item { display:flex; gap:8px; align-items:center; padding:3px 0; font-size:13px; color:#fecaca; }
+    .fc-item img, .fc-item .fc-sem-foto { width:36px; height:36px; border-radius:6px; object-fit:cover; flex-shrink:0; }
+    .fc-meta { font-size:12px; color:#cbd5e1; margin-top:6px; }
+    .fc-meta code { font-size:12px; }
+    /* Botoes no rodape, na zona do polegar. A classe vem do key do container
+       (`st.container(key="rodape_conferir")` -> `.st-key-rodape_conferir`). */
+    .st-key-rodape_conferir { position: sticky; bottom: 0; z-index: 50; background: #0b1220;
+        padding: 8px 0 calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid #1e293b; }
+    .st-key-rodape_conferir button { min-height: 56px; font-size: 16px; font-weight: 800; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -216,7 +250,125 @@ def tag_canal(canal: str) -> str:
         return '<span class="scanner-tag scanner-tag-tiktok">🎵 TIKTOK SHOP</span>'
     if "correio" in c:
         return '<span class="scanner-tag scanner-tag-correios">📮 CORREIOS</span>'
+    if "amazon" in c:
+        return '<span class="scanner-tag scanner-tag-amazon">📦 AMAZON</span>'
     return f'<span class="scanner-tag scanner-tag-manual">📦 {str(canal or "MANUAL").upper()}</span>'
+
+
+# Cor -> amostra visual na ficha compacta (erro de cor e' o erro nº1 de
+# separacao -- revisao do DeepSeek, 28/09). Cor desconhecida: sem amostra.
+_SWATCH_COR = {
+    "preto": "#111111", "preta": "#111111", "branco": "#ffffff", "branca": "#ffffff",
+    "cinza": "#9ca3af", "azul marinho": "#1e3a8a", "marinho": "#1e3a8a",
+    "azul": "#2563eb", "rosa": "#f472b6", "bege": "#d6c3a3", "nude": "#e0bfa6",
+    "vermelho": "#dc2626", "verde": "#16a34a", "amarelo": "#facc15",
+    "chocolate": "#5b3a29", "marrom": "#6b4226", "vinho": "#7f1d1d", "rubi": "#9b111e",
+}
+
+
+def _swatch(cor: str) -> str:
+    c = (cor or "").strip().lower()
+    hexa = _SWATCH_COR.get(c) or next(
+        (v for k, v in _SWATCH_COR.items() if k in c), "")
+    return f'<span class="fc-swatch" style="background:{hexa};"></span>' if hexa else ""
+
+
+def _ficha_compacta_html(res: dict, *, badge: str, primeiro_nome: str,
+                         conferido: bool, modelo: str, itens: list, volumes: int,
+                         img: str, cor_destaque: str, borda: str, fundo: str) -> str:
+    """Ficha do pedido no modo "⚡ Câmera rápida": tudo que importa pra embalar
+    cabe na tela do celular, sem rolar (pedido do Jota, 28/09).
+
+    Template PROPRIO (nao override do card grande) -- revisao DeepSeek +
+    Gemini: override com !important sobre style inline quebra a cada versao do
+    Streamlit. Mesmos dados ja' calculados pela pagina; so' o HTML muda.
+
+    Mantem: produto, tamanho, cor (com amostra), kit, quantidade grande, lista
+    de itens (rolagem interna se for longa), avisos como etiquetas, 1o nome do
+    cliente (decisao do Jota 03/08: casa caixa com etiqueta) e o FINAL do
+    rastreio (unica defesa se a camera ler a etiqueta de outra caixa).
+    Tira: barcode de comando (so' serve pra pistola), CEP, e o aviso generico.
+
+    Todo texto vindo de fora (nome de cliente/afiliado, produto, SKU, URL da
+    foto) passa por `_e()` -- vai para `unsafe_allow_html` (revisao DeepSeek).
+    """
+    import html as _html
+
+    def _e(v) -> str:
+        return _html.escape(str(v or ""), quote=True)
+
+    avisos = []
+    if conferido:
+        avisos.append(("⚠️ JÁ CONFERIDO HOJE", "#78350f", "#fde68a"))
+    if res.get("status_pedido") == "NAO_VERIFICADO":
+        avisos.append(("⚠️ STATUS NÃO VERIFICADO", "#78350f", "#fde68a"))
+    if res.get("is_sample"):
+        avisos.append(("🎁 AMOSTRA CRIADOR", "#3b0764", "#e9d5ff"))
+    if res.get("is_affiliate") and not res.get("is_sample"):
+        nome_af = (res.get("afiliado_nome") or "").strip()
+        avisos.append((f"🎯 AFILIADO{': ' + _e(nome_af[:18]) if nome_af else ''}",
+                       "#451a03", "#fde68a"))
+    avisos_html = ""
+    if avisos:
+        avisos_html = '<div class="fc-avisos">' + "".join(
+            f'<span class="fc-aviso" style="background:{bg}; color:{fg};">{t}</span>'
+            for t, bg, fg in avisos) + "</div>"
+
+    foto = (f'<img class="fc-foto" src="{_e(img)}" style="border:2px solid {borda};">' if img
+            else f'<div class="fc-foto" style="background:#0f172a; border:2px solid {borda};'
+                 f' display:flex; align-items:center; justify-content:center; font-size:26px;">📦</div>')
+
+    # Quantidade: o erro mais caro da bancada e' a caixa sair com 1 kit quando
+    # eram 2. Numero grande, lido de braco estendido.
+    multi = len(itens) > 1
+    qtd_txt = f"{len(itens)} itens" if multi else f"{volumes}x"
+    qtd_cor = "#fca5a5" if (multi or volumes > 1) else cor_destaque
+
+    itens_html = ""
+    if multi:
+        linhas = []
+        for i, it in enumerate(itens, 1):
+            im = it.get("imagem_url") or ""
+            thumb = (f'<img src="{_e(im)}">' if im else
+                     '<div class="fc-sem-foto" style="background:#1e293b; display:flex;'
+                     ' align-items:center; justify-content:center;">📦</div>')
+            q = int(it.get("quantidade") or 1)
+            var = it.get("variacao") or it.get("cor") or ""
+            linhas.append(
+                f'<div class="fc-item">{thumb}<div><b>{i}. {q}x {_e(it.get("sku") or "—")}</b>'
+                + (f' · {_e(var)}' if var else '') + '</div></div>')
+        itens_html = (f'<div class="fc-itens"><div class="fc-itens-tit">⚠️ SEPARE TODOS — '
+                      f'{volumes} volume(s)</div>{"".join(linhas)}</div>')
+
+    cor = res.get("cor") or "—"
+
+    def _chip(lbl: str, val: str) -> str:
+        return (f'<div class="fc-chip" style="background:{fundo}; border:1.5px solid {borda};">'
+                f'<div class="fc-chip-lbl">{lbl}</div>'
+                f'<div class="fc-chip-val" style="color:{cor_destaque};">{val}</div></div>')
+
+    chips = (_chip("Tamanho", _e(res.get("tamanho") or "—"))
+             + _chip("Cor", _swatch(cor) + _e(cor))
+             + _chip("Kit", _e(res.get("kit") or "Unitário")))
+
+    rastreio = str(res.get("tracking") or "")
+    fim_rastreio = f"…{rastreio[-6:]}" if len(rastreio) > 6 else (rastreio or "—")
+
+    return f"""
+    <div class="fc-card">
+        <div class="fc-topo"><span class="fc-titulo">🟢 SEPARAR</span>{badge}</div>
+        {avisos_html}
+        <div class="fc-prod">
+            {foto}
+            <div class="fc-nome" style="color:{cor_destaque};">{_e(modelo)}</div>
+            <div class="fc-qtd" style="color:{qtd_cor};">{qtd_txt}</div>
+        </div>
+        <div class="fc-chips">{chips}</div>
+        {itens_html}
+        <div class="fc-meta">👤 {_e(primeiro_nome)} · 🚚 <code>{_e(fim_rastreio)}</code>
+            · SKU <code>{_e(res.get('sku') or '—')}</code></div>
+    </div>
+    """
 
 
 # Decodificacao de QR/barcode vem de core_scanner_decoder (reutilizavel/testavel).
@@ -1153,13 +1305,16 @@ if res and res.get("encontrado"):
                 unsafe_allow_html=True,
             )
     else:
-        if conferido:
+        # No modo "⚡ Câmera rápida" estes 4 avisos viram etiquetas numa linha
+        # so', DENTRO da ficha compacta (ver _ficha_compacta_html) -- nao somem,
+        # so' deixam de empilhar blocos altos antes do card.
+        if conferido and not _modo_compacto:
             st.warning("⚠️ Este tracking JÁ FOI CONFERIDO hoje. Confira se não é caixa repetida.")
 
-        if res.get("status_pedido") == "NAO_VERIFICADO":
+        if res.get("status_pedido") == "NAO_VERIFICADO" and not _modo_compacto:
             st.warning(res.get("alerta") or "⚠️ Status do pedido não verificado. Confirme antes de enviar.")
 
-        if res.get("is_sample"):
+        if res.get("is_sample") and not _modo_compacto:
             # Amostra gratis p/ criador (programa de afiliados TikTok) — vitrine
             # da marca, vale capricho extra (cartao, embalagem) na bancada.
             _render_html(
@@ -1329,9 +1484,16 @@ if res and res.get("encontrado"):
             </div>
         </div>
         """
-        _render_html(card_sucesso_html)
-
-        st.info("Confira o produto, a cor e a quantidade antes de fechar a caixa.")
+        if _modo_compacto:
+            _render_html(_ficha_compacta_html(
+                res, badge=badge, primeiro_nome=primeiro_nome, conferido=conferido,
+                modelo=modelo, itens=_itens_ped, volumes=_volumes,
+                img=_img_ficha, cor_destaque=cor_destaque,
+                borda=borda_destaque, fundo=fundo_destaque,
+            ))
+        else:
+            _render_html(card_sucesso_html)
+            st.info("Confira o produto, a cor e a quantidade antes de fechar a caixa.")
 
         # -------------------------------------------------------------- #
         # DUPLA CONFERENCIA — bipar a etiqueta de SKU da peca (opcional).
@@ -1341,19 +1503,27 @@ if res and res.get("encontrado"):
         # -------------------------------------------------------------- #
         val = st.session_state.scanner_validacao
 
-        with st.form("form_validacao_sku", clear_on_submit=True):
-            st.markdown("**🏷️ Confirmar a peça** — bipe a etiqueta de SKU do produto")
-            cod_peca = st.text_input(
-                "Código da peça",
-                placeholder="Ex: MEINVMAY1013540PRE  ou  TOPTAY016-AZUL",
-                label_visibility="collapsed",
-                key="inp_validacao",
-            )
-            if st.form_submit_button("🔎 Validar peça", use_container_width=True):
-                if cod_peca and cod_peca.strip():
-                    _validar_produto(cod_peca)
-                    st.rerun()
+        # Modo compacto: validacao opcional num expander fechado (abre sozinho
+        # se ja' houver resultado, pra ninguem perder uma divergencia).
+        _val_ctx = (st.expander("🏷️ Confirmar a peça (opcional)", expanded=bool(val))
+                    if _modo_compacto else st.container())
+        with _val_ctx:
+            with st.form("form_validacao_sku", clear_on_submit=True):
+                st.markdown("**🏷️ Confirmar a peça** — bipe a etiqueta de SKU do produto")
+                cod_peca = st.text_input(
+                    "Código da peça",
+                    placeholder="Ex: MEINVMAY1013540PRE  ou  TOPTAY016-AZUL",
+                    label_visibility="collapsed",
+                    key="inp_validacao",
+                )
+                if st.form_submit_button("🔎 Validar peça", use_container_width=True):
+                    if cod_peca and cod_peca.strip():
+                        _validar_produto(cod_peca)
+                        st.rerun()
 
+        # Resultado FORA do expander: se o operador fechou o expander, uma
+        # divergencia (peca errada na caixa) nao pode ficar escondida atras
+        # dele (revisao DeepSeek, 28/09).
         if val:
             if val["ok"]:
                 st.success(f"**{val['titulo']}**\n\n{val['detalhe']}")
@@ -1369,38 +1539,44 @@ if res and res.get("encontrado"):
                     "Confira a peça na caixa. Se estiver errada, troque antes de despachar."
                 )
 
-        col_prox, col_pular = st.columns(2)
-        with col_prox:
-            # Rotulo muda conforme a validacao pra dar a confirmacao explicita
-            # que o Jota pediu ("pode despachar") sem criar um botao a mais.
-            if val and val.get("ok"):
-                rotulo_ok = "✅ PODE DESPACHAR → PRÓXIMO"
-            elif val and val["nivel"] not in ("sem_dados",):
-                rotulo_ok = "⚠️ CONFERIR MESMO ASSIM → PRÓXIMO"
-            else:
-                rotulo_ok = "✅ CONFERIDO → PRÓXIMO"
-
-            if st.button(rotulo_ok, type="primary", use_container_width=True):
-                db.registrar_conferencia(
-                    res.get("tracking", ""),
-                    res.get("pedido_ecommerce", ""),
-                    res.get("canal", ""),
-                    res.get("sku", ""),
-                    sku_validado=(val or {}).get("lido", ""),
-                    validacao_nivel=(val or {}).get("nivel", ""),
-                )
-                st.session_state.scanner_sessao_conferidos += 1
+        # Modo compacto: botoes num container com key -> classe CSS
+        # `st-key-rodape_conferir`, fixada no rodape (sticky) pela regra no
+        # bloco de CSS do topo. Zona do polegar, nunca sai da tela.
+        _rodape_ctx = (st.container(key="rodape_conferir") if _modo_compacto
+                       else st.container())
+        with _rodape_ctx:
+            col_prox, col_pular = st.columns(2)
+            with col_prox:
+                # Rotulo muda conforme a validacao pra dar a confirmacao explicita
+                # que o Jota pediu ("pode despachar") sem criar um botao a mais.
                 if val and val.get("ok"):
-                    st.session_state.scanner_sessao_validados += 1
+                    rotulo_ok = "✅ PODE DESPACHAR → PRÓXIMO"
                 elif val and val["nivel"] not in ("sem_dados",):
-                    st.session_state.scanner_sessao_divergencias += 1
-                _limpar_leitura()
-                st.rerun()
-        with col_pular:
-            if st.button("⚠️ PULAR", use_container_width=True):
-                st.session_state.scanner_sessao_pulados += 1
-                _limpar_leitura()
-                st.rerun()
+                    rotulo_ok = "⚠️ CONFERIR MESMO ASSIM → PRÓXIMO"
+                else:
+                    rotulo_ok = "✅ CONFERIDO → PRÓXIMO"
+
+                if st.button(rotulo_ok, type="primary", use_container_width=True):
+                    db.registrar_conferencia(
+                        res.get("tracking", ""),
+                        res.get("pedido_ecommerce", ""),
+                        res.get("canal", ""),
+                        res.get("sku", ""),
+                        sku_validado=(val or {}).get("lido", ""),
+                        validacao_nivel=(val or {}).get("nivel", ""),
+                    )
+                    st.session_state.scanner_sessao_conferidos += 1
+                    if val and val.get("ok"):
+                        st.session_state.scanner_sessao_validados += 1
+                    elif val and val["nivel"] not in ("sem_dados",):
+                        st.session_state.scanner_sessao_divergencias += 1
+                    _limpar_leitura()
+                    st.rerun()
+            with col_pular:
+                if st.button("⚠️ PULAR", use_container_width=True):
+                    st.session_state.scanner_sessao_pulados += 1
+                    _limpar_leitura()
+                    st.rerun()
 
 elif res and res.get("codigo_invalido"):
     # ----- 🟠 CODIGO LIDO NAO SERVE (chave de NF-e, CEP...) -----
