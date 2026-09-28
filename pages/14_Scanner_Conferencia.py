@@ -702,15 +702,30 @@ if st.session_state.exp_modo:
 
 
 stats = db.stats_dia()
-cab_a, cab_b = st.columns([3, 2])
-with cab_a:
-    st.title("📷 Scanner de Conferência")
-with cab_b:
-    st.metric(
-        "✅ Nesta sessão",
-        st.session_state.scanner_sessao_conferidos,
-        help=f"Conferidos hoje no total: {stats['conferidos_hoje']}",
-    )
+
+# 🆕 (28/09) Layout compacto no modo "⚡ Câmera rápida": cabecalho+sync vao
+# pra dentro de um expander fechado, pra camera aparecer sem rolar a tela --
+# pedido do Jota ("dedicado e layout de celular... tela cheia... sem muita
+# rolagem"). So' afeta ESTE modo; os outros dois continuam com tudo aberto
+# na tela, do jeito que sempre foi. A key do radio ja existe em
+# session_state de reruns anteriores (o widget so' e' desenhado mais
+# abaixo), entao da' pra ler o modo aqui em cima sem problema.
+# ⚠️ No app a key do radio e' `scanner_modo_leitura` (no JF_Automacoes e'
+# `modo_bipagem_scanner`) -- os dois repos tem seletores proprios aqui.
+_modo_compacto = st.session_state.get("scanner_modo_leitura", "").startswith("⚡")
+_cab_ctx = st.expander("⚙️ Detalhes (sessão, sincronização)", expanded=False) \
+    if _modo_compacto else st.container()
+
+with _cab_ctx:
+    cab_a, cab_b = st.columns([3, 2])
+    with cab_a:
+        st.title("📷 Scanner de Conferência")
+    with cab_b:
+        st.metric(
+            "✅ Nesta sessão",
+            st.session_state.scanner_sessao_conferidos,
+            help=f"Conferidos hoje no total: {stats['conferidos_hoje']}",
+        )
 
 # ------------------------------------------------------------------ #
 # ALARME DE DIVERGENCIA — verificacao dobrada (indice local x marketplace)
@@ -759,42 +774,54 @@ if _divs:
 # sidebar fica escondida atras do ">>" e, quando sai venda nova, o rastreio
 # ainda nao esta no indice -- o scanner acusa "nao encontrado" e o operador
 # precisa sincronizar na hora, sem sair da tela de bipagem.
-col_sync, col_info = st.columns([2, 3])
-with col_sync:
-    if st.button("🔄 ATUALIZAR BASE (Shopee · ML · TikTok)",
-                 use_container_width=True, type="secondary"):
-        with st.spinner("Buscando pedidos e rastreios nas APIs…"):
-            try:
-                # ⚡ Versao paralela: os 3 canais ao mesmo tempo e a Shopee com
-                # 8 conexoes. Medido 17/08: 230s -> 68s, mesmos 31 registros.
-                # O `populator` original segue intacto como fallback.
-                try:
-                    import core_scanner_populator_rapido as populator_rapido
-                    r_sync = populator_rapido.popular_todos_rapido(force=True)
-                except Exception as exc_rapido:
-                    # Cai no original em vez de falhar: atualizar devagar e'
-                    # melhor que nao atualizar.
-                    st.warning(f"Modo rápido indisponível ({exc_rapido}) — "
-                               "usando o método antigo, ~4 min.")
-                    r_sync = populator.popular_todos(force=True)
+#
+# Compacto no modo "⚡ Câmera rápida" (mesma logica do cabecalho acima):
+# fica num expander fechado pra camera aparecer sem rolar. `expanded=True`
+# se a mensagem do ultimo sync ainda estiver pendente de mostrar, senao o
+# resultado do "Atualizar" ficaria escondido sem o operador ver.
+_sync_ctx = st.expander(
+    "🔄 Sincronizar base (Shopee · ML · TikTok)",
+    expanded=bool(st.session_state.get("scanner_msg_sync")),
+) if _modo_compacto else st.container()
 
-                st.session_state.scanner_msg_sync = (
-                    f"✅ Base atualizada → Shopee {r_sync.get('shopee', 0)} · "
-                    f"ML {r_sync.get('ml', 0)} · TikTok {r_sync.get('tiktok', 0)}"
-                    + (f" · {r_sync['segundos']}s" if r_sync.get("segundos") else "")
-                )
-                # Verificacao dobrada em lote: cruza o indice inteiro contra os
-                # marketplaces em background, pra divergencia aparecer ANTES de
-                # a caixa ser montada.
-                auditoria.auditar_pendentes_async()
-            except Exception as e:
-                st.session_state.scanner_msg_sync = f"❌ Falha ao atualizar: {e}"
-        st.rerun()
-with col_info:
-    st.caption(
-        f"🗂️ {stats['total_indice']} rastreios na base · "
-        "toque em **Atualizar** quando sair venda nova"
-    )
+with _sync_ctx:
+    col_sync, col_info = st.columns([2, 3])
+    with col_sync:
+        if st.button("🔄 ATUALIZAR BASE (Shopee · ML · TikTok)",
+                     use_container_width=True, type="secondary"):
+            with st.spinner("Buscando pedidos e rastreios nas APIs…"):
+                try:
+                    # ⚡ Versao paralela: os 3 canais ao mesmo tempo e a Shopee
+                    # com 8 conexoes. Medido 17/08: 230s -> 68s, mesmos 31
+                    # registros. O `populator` original segue intacto como
+                    # fallback.
+                    try:
+                        import core_scanner_populator_rapido as populator_rapido
+                        r_sync = populator_rapido.popular_todos_rapido(force=True)
+                    except Exception as exc_rapido:
+                        # Cai no original em vez de falhar: atualizar devagar
+                        # e' melhor que nao atualizar.
+                        st.warning(f"Modo rápido indisponível ({exc_rapido}) — "
+                                   "usando o método antigo, ~4 min.")
+                        r_sync = populator.popular_todos(force=True)
+
+                    st.session_state.scanner_msg_sync = (
+                        f"✅ Base atualizada → Shopee {r_sync.get('shopee', 0)} · "
+                        f"ML {r_sync.get('ml', 0)} · TikTok {r_sync.get('tiktok', 0)}"
+                        + (f" · {r_sync['segundos']}s" if r_sync.get("segundos") else "")
+                    )
+                    # Verificacao dobrada em lote: cruza o indice inteiro
+                    # contra os marketplaces em background, pra divergencia
+                    # aparecer ANTES de a caixa ser montada.
+                    auditoria.auditar_pendentes_async()
+                except Exception as e:
+                    st.session_state.scanner_msg_sync = f"❌ Falha ao atualizar: {e}"
+            st.rerun()
+    with col_info:
+        st.caption(
+            f"🗂️ {stats['total_indice']} rastreios na base · "
+            "toque em **Atualizar** quando sair venda nova"
+        )
 
 if st.session_state.get("scanner_msg_sync"):
     _msg = st.session_state.scanner_msg_sync
