@@ -13,6 +13,7 @@ from __future__ import annotations
 import core_env_loader
 
 import logging
+import os
 import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,84 @@ def normalizar_sku(sku: str) -> str:
     if not sku:
         return "SEM_SKU"
     return " ".join(str(sku).split()).strip().upper()
+
+
+# ---------------------------------------------------------------------- #
+# Recomposicao de kits desmembrados pelo Olist
+# ---------------------------------------------------------------------- #
+# ⚠️ Achado real (28/09/2026): o Comandante mudou uma config global do
+# Olist ("Desmembrar kits ao importar pedidos") e pedidos passaram a vir
+# com o ATOMO multiplicado (ex: MEINVMAY1014046PRE x3) em vez do SKU do
+# Kit (MEINVMAY1014046-PRE3_KIT3 x1). A esteira (lista de montagem) e o
+# Scanner leem `sku`/`quantidade` cegamente e mostravam "3x Meia Preta"
+# em vez de "1x Kit 3 Preto" -- a bancada nao sabia se eram 3 kits ou 3
+# pares avulsos. A config ja foi revertida, mas o codigo precisa aguentar
+# as DUAS formas (kit direto OU desmembrado), sempre mostrando o kit —
+# porque o Olist pode voltar a desmembrar (ou outro canal fizer o mesmo).
+#
+# Fonte de verdade: tabela `itens_kit` do Supabase (sku_kit, sku_componente,
+# quantidade). Um item desmembrado so' e' recomposto quando a quantidade
+# BATE EXATO com uma linha dessa tabela -- 3x do atomo do Kit3 vira 1x
+# Kit3; 3x de um atomo que NAO tem kit de tamanho 3 correspondente fica
+# como estava (nunca inventa kit que nao existe).
+_CACHE_ITENS_KIT: dict[str, list[tuple[str, int]]] | None = None
+_CACHE_ITENS_KIT_TS: float = 0.0
+_CACHE_TTL_ITENS_KIT = 600  # 10 min -- tabela de kits muda raramente
+
+
+def _carregar_itens_kit() -> dict[str, list[tuple[str, int]]]:
+    """{sku_componente: [(sku_kit, quantidade), ...]} — cache de 10 min."""
+    global _CACHE_ITENS_KIT, _CACHE_ITENS_KIT_TS
+    agora = time.monotonic()
+    if _CACHE_ITENS_KIT is not None and (agora - _CACHE_ITENS_KIT_TS) < _CACHE_TTL_ITENS_KIT:
+        return _CACHE_ITENS_KIT
+
+    mapa: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    try:
+        import requests
+
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+        if url and key:
+            r = requests.get(
+                f"{url}/rest/v1/itens_kit",
+                params={"select": "sku_kit,sku_componente,quantidade"},
+                headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            for row in r.json():
+                comp = normalizar_sku(row.get("sku_componente") or "")
+                sku_kit = row.get("sku_kit") or ""
+                qtd = int(row.get("quantidade") or 0)
+                if comp and sku_kit and qtd > 0:
+                    mapa[comp].append((sku_kit, qtd))
+    except Exception as exc:
+        log.warning("Recomposicao de kits: itens_kit indisponivel (%s) — "
+                    "seguindo sem recompor", exc)
+
+    _CACHE_ITENS_KIT = dict(mapa)
+    _CACHE_ITENS_KIT_TS = agora
+    return _CACHE_ITENS_KIT
+
+
+def recompor_kit_se_desmembrado(sku: str, quantidade: int) -> tuple[str, int] | None:
+    """Se `quantidade` de `sku` bate exato com um kit conhecido, devolve
+    (sku_do_kit, 1). Senao devolve None (item fica como veio).
+
+    Quando MAIS DE UM kit bate (ex: atomo entra no Kit3 e no Kit6, e o
+    pedido tem exatamente 6 unidades — ambiguo com "2x Kit3" tambem
+    valido), prefere o kit MAIOR: e' o caso mais comum (cliente comprando
+    o kit inteiro), e reduz o risco de sugerir "2x Kit3" quando o cliente
+    comprou "1x Kit6" de fato.
+    """
+    sku_norm = normalizar_sku(sku)
+    candidatos = _carregar_itens_kit().get(sku_norm) or []
+    bateram = [(sk, q) for sk, q in candidatos if q == quantidade]
+    if not bateram:
+        return None
+    sku_kit, _ = max(bateram, key=lambda par: par[1])
+    return sku_kit, 1
 
 
 def extrair_familia(sku: str) -> str:
@@ -254,10 +333,22 @@ def processar_batch_picking(pedidos: List[Dict[str, Any]]) -> Dict[str, Any]:
             descricao = prod.get("descricao") or prod.get("nome") or it.get("descricao") or sku
             qtd = int(it.get("quantidade") or 1)
 
+            # Recompoe para EXIBICAO se o Olist desmembrou o kit em atomos
+            # (ver bloco de comentario acima de recompor_kit_se_desmembrado).
+            # `sku`/`qtd` (peca real, usados no agrupamento/estoque abaixo)
+            # NAO mudam -- so' o que a bancada LE muda, para nao afetar
+            # contagem de peca fisica nem classificacao simples/multi-item.
+            recomposto = recompor_kit_se_desmembrado(sku, qtd)
+            sku_exibicao, qtd_exibicao = recomposto if recomposto else (sku, qtd)
+
             info_pedido["itens"].append({
-                "sku": sku,
+                "sku": sku_exibicao,
                 "descricao": descricao,
-                "quantidade": qtd,
+                "quantidade": qtd_exibicao,
+                # Peca real e SKU real do atomo -- usados por quem precisa
+                # do fisico exato (estoque, lista de coleta), nao da rotulagem.
+                "sku_fisico": sku,
+                "quantidade_fisica": qtd,
             })
 
             # Agrupa para a lista de coleta

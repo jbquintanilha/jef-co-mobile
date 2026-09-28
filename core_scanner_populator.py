@@ -200,7 +200,19 @@ def _registro_do_pedido_olist(client, p: dict, *, canal: str, tracking: str,
             log.warning("Falha ao obter detalhe do pedido Olist %s: %s", p.get("id"), e)
 
     prod = primeiro.get("produto") or primeiro
-    sku = str(prod.get("sku") or prod.get("codigo") or "")
+    sku_bruto_principal = str(prod.get("sku") or prod.get("codigo") or "")
+
+    # ⚠️ Mesma recomposicao de kit desmembrado que a Esteira usa (achado
+    # 28/09: Olist com "Desmembrar kits ao importar" ligado mandava o atomo
+    # multiplicado, ex 3x MEINVMAY1014046PRE, e o Scanner bipava/mostrava
+    # como se fossem 3 pecas avulsas em vez de "1x Kit 3" -- o bipador
+    # "vinha na logica errada tambem" (Jota). Ver core_separacao.py.
+    from core_separacao import normalizar_sku, recompor_kit_se_desmembrado
+
+    _qtd_principal = int(primeiro.get("quantidade") or 1)
+    _recomposto_principal = recompor_kit_se_desmembrado(
+        normalizar_sku(sku_bruto_principal), _qtd_principal)
+    sku = _recomposto_principal[0] if _recomposto_principal else sku_bruto_principal
 
     # Lista COMPLETA de itens. Um pedido multi-item sai numa etiqueta so —
     # guardar apenas o primeiro fazia a bancada separar caixa incompleta.
@@ -210,12 +222,17 @@ def _registro_do_pedido_olist(client, p: dict, *, canal: str, tracking: str,
         s = str(pr.get("sku") or pr.get("codigo") or "")
         if not s:
             continue
+        qtd_fisica = int(it.get("quantidade") or 1)
+        recomposto = recompor_kit_se_desmembrado(normalizar_sku(s), qtd_fisica)
+        s_exibicao, qtd_exibicao = recomposto if recomposto else (s, qtd_fisica)
         itens_lista.append({
-            "sku": s,
+            "sku": s_exibicao,
             "nome": str(pr.get("descricao") or pr.get("nome") or ""),
             "cor": _extrair_cor(it),
-            "kit": _extrair_kit(s),
-            "quantidade": it.get("quantidade") or 1,
+            "kit": _extrair_kit(s_exibicao),
+            "quantidade": qtd_exibicao,
+            "sku_fisico": s,
+            "quantidade_fisica": qtd_fisica,
         })
 
     # Classifica pela MESMA funcao da Esteira. `processar_batch_picking`
