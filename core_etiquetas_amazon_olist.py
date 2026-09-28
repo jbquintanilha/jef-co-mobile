@@ -92,12 +92,21 @@ def listar_pedidos_a_enviar(*, dias: int = 30) -> list[dict[str, Any]]:
 
     ``dias`` existe so' para manter a assinatura dos outros canais.
 
+    ⚠️ (28/09/2026) `idNotaFiscal` NAO vem preenchido na listagem resumida do
+    Olist (`_pedidos_olist`/`listar_pedidos_todos`) -- so' aparece no detalhe
+    (`obter_pedido`). A 1a versao deste modulo lia direto do resumo e por
+    isso NUNCA achava nota nenhuma: zero pedidos Amazon passavam, sempre,
+    mesmo com nota emitida. Achado com o pedido real 1072/#1072, que ja
+    tinha nota 907 havia 1 dia e seguia invisivel para a esteira. Corrigido
+    buscando o detalhe quando o resumo vier vazio.
+
     Devolve [{"pedido", "id_olist", "id_nota", "cliente"}]. Pedido sem nota
     fica de fora: sem nota nao ha' expedicao, e sem expedicao nao ha' etiqueta.
     """
     del dias
-    from core_scanner_populator import _pedido_pendente, _pedidos_olist
+    from core_scanner_populator import _client_olist, _pedido_pendente, _pedidos_olist
 
+    client = None
     pedidos: list[dict[str, Any]] = []
     for p in _pedidos_olist():
         ecom = p.get("ecommerce") or {}
@@ -107,6 +116,16 @@ def listar_pedidos_a_enviar(*, dias: int = 30) -> list[dict[str, Any]]:
         if not _pedido_pendente(p):
             continue
         id_nota = p.get("idNotaFiscal")
+        if not id_nota:
+            # Resumo nao traz o campo -- confere no detalhe antes de
+            # descartar (so' para os que ja passaram nos filtros acima,
+            # que sao poucos, entao o custo de 1 GET a mais e' baixo).
+            client = client or _client_olist()
+            try:
+                id_nota = client.obter_pedido(p.get("id")).get("idNotaFiscal")
+            except Exception as exc:
+                log.warning("Amazon %s: falha ao checar nota no detalhe: %s", num, exc)
+                id_nota = None
         if not id_nota:
             log.info("Amazon %s sem nota fiscal ainda — sem etiqueta", num)
             continue
