@@ -26,22 +26,32 @@ ALTURA_PADRAO = 460
 
 
 def render_camera(altura: int = ALTURA_PADRAO, chave_query: str = "cod",
-                  botao_submit: str = "Resolver", rearmar: bool = False) -> None:
+                  botao_submit: str = "Resolver", rearmar: bool = False,
+                  continuo: bool = False) -> None:
     """Desenha a camera ao vivo com suporte a foto nativa de celular em HTTP.
 
     ``botao_submit``: texto do botao que a camera clica depois de preencher o
     campo. A tela principal usa "Resolver"; a conferencia final usa "Conferir".
     Sem isso a camera le o codigo mas nao dispara o submit na outra tela.
+
+    ``continuo`` (28/09, modo "⚡ Câmera rápida"): quando True, some o botao
+    "📸 LER CÓDIGO" e a camera fica escaneando sozinha em loop -- sem precisar
+    tocar em nada, so' apontar. Default False: continua exigindo o toque no
+    botao a cada etiqueta, do jeito que sempre foi (pedido do Jota: "maioria
+    sera' com clique").
     """
+    texto_status_inicial = ("Aponte a câmera — leitura automática"
+                            if continuo else
+                            "Aponte a câmera e toque em 📸 LER CÓDIGO")
     html = """
 <div id="wrap">
   <div id="video-box">
     <video id="cam" playsinline muted></video>
     <div id="mira"></div>
-    <div id="status">Aponte a câmera e toque em 📸 LER CÓDIGO</div>
+    <div id="status">__STATUS_INICIAL__</div>
   </div>
-  <button id="btn-capturar" type="button">📸 LER CÓDIGO</button>
-  
+  <button id="btn-capturar" type="button" style="__DISPLAY_BOTAO__">📸 LER CÓDIGO</button>
+
   <!-- Fallback de Câmera Nativa para conexões HTTP no Celular -->
   <div id="box-camera-nativa" style="display:none; margin-top:12px; text-align:center;">
     <label for="inp-foto-nativa" id="btn-foto-nativa">
@@ -112,9 +122,11 @@ def render_camera(altura: int = ALTURA_PADRAO, chave_query: str = "cod",
   const boxCamNativa   = document.getElementById('box-camera-nativa');
   const inpFotoNativa  = document.getElementById('inp-foto-nativa');
   const CHAVE          = "__CHAVE__";
+  const CONTINUO       = __CONTINUO__;
   let   parado         = false;
   let   detector       = null;
   let   leitorCdn      = null;
+  let   loopContinuo   = null;
 
   function falhar(msg) {
     erroEl.style.display = 'block';
@@ -152,6 +164,7 @@ def render_camera(altura: int = ALTURA_PADRAO, chave_query: str = "cod",
   function entregar(codigo) {
     if (parado) return;
     parado = true;
+    if (loopContinuo) { clearInterval(loopContinuo); loopContinuo = null; }
     statusEl.className = 'ok';
     statusEl.textContent = '✅ Lido: ' + codigo;
     bipar();
@@ -195,7 +208,9 @@ def render_camera(altura: int = ALTURA_PADRAO, chave_query: str = "cod",
             setTimeout(function () {
               parado = false;
               statusEl.className = '';
-              statusEl.textContent = 'Aponte a câmera e toque em 📸 LER CÓDIGO';
+              statusEl.textContent = CONTINUO
+                ? 'Aponte a câmera — leitura automática'
+                : 'Aponte a câmera e toque em 📸 LER CÓDIGO';
               // O botao so era reabilitado no caminho de FALHA de leitura
               // (linha do "Codigo nao detectado"). Numa leitura bem-sucedida
               // ele ficava disabled pra sempre -- religar o video sem religar
@@ -366,14 +381,31 @@ def render_camera(altura: int = ALTURA_PADRAO, chave_query: str = "cod",
     }
 
     try {
+      // ⚠️ Resolucao maior (1920x1080, era 1280x720): etiqueta de texto
+      // pequeno precisa de mais pixel pra focar/decodificar de perto
+      // (queixa real do Jota: "o foco era muito ruim"). `ideal` nao trava —
+      // se o aparelho nao suportar, o navegador entrega o que tiver.
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' },
-                 width: { ideal: 1280 }, height: { ideal: 720 } },
+                 width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false
       });
       video.srcObject = stream;
       await video.play();
-      statusEl.textContent = 'Aponte a câmera e toque em 📸 LER CÓDIGO';
+      statusEl.textContent = CONTINUO
+        ? 'Aponte a câmera — leitura automática'
+        : 'Aponte a câmera e toque em 📸 LER CÓDIGO';
+
+      // Foco continuo/macro quando o navegador expoe a capacidade (Chrome
+      // Android costuma expor). Best-effort: se nao suportar, ignora sem
+      // quebrar a camera -- foco automatico padrao do navegador segue valendo.
+      try {
+        const faixa = stream.getVideoTracks()[0];
+        const caps = faixa.getCapabilities ? faixa.getCapabilities() : {};
+        if (caps.focusMode && caps.focusMode.includes('continuous')) {
+          await faixa.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+        }
+      } catch (eFoco) {}
     } catch (e) {
       falhar("Não foi possível abrir a câmera: " + e.message +
              "<br>Use o botão azul abaixo para tirar foto com a câmera do celular.");
@@ -393,6 +425,19 @@ def render_camera(altura: int = ALTURA_PADRAO, chave_query: str = "cod",
     } catch (e) {
       iniciarFallbackCDN();
     }
+
+    if (CONTINUO) iniciarLoopContinuo();
+  }
+
+  // Loop de leitura continua (modo "⚡ Câmera rápida" com o toggle ligado):
+  // reusa `executarLeituraClique()` -- mesma logica de deteccao, so' chamada
+  // sozinha em intervalo em vez de esperar o clique no botao. Para junto com
+  // `entregar()` (que ja' para o stream) e reativa no rearme.
+  function iniciarLoopContinuo() {
+    if (loopContinuo) clearInterval(loopContinuo);
+    loopContinuo = setInterval(function () {
+      if (!parado) executarLeituraClique();
+    }, 700);
   }
 
   iniciar();
@@ -402,5 +447,8 @@ def render_camera(altura: int = ALTURA_PADRAO, chave_query: str = "cod",
     html = (html.replace("__ALTURA__", str(altura))
                 .replace("__CHAVE__", chave_query)
                 .replace("__BTN_SUBMIT__", botao_submit)
-                .replace("__REARMAR__", "true" if rearmar else "false"))
+                .replace("__REARMAR__", "true" if rearmar else "false")
+                .replace("__CONTINUO__", "true" if continuo else "false")
+                .replace("__STATUS_INICIAL__", texto_status_inicial)
+                .replace("__DISPLAY_BOTAO__", "display:none;" if continuo else ""))
     components.html(html, height=altura + 150)

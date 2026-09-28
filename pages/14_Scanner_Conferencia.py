@@ -804,15 +804,65 @@ if st.session_state.get("scanner_msg_sync"):
 # ------------------------------------------------------------------ #
 # SELETOR DE DISPOSITIVO: BIPADOR FÍSICO / PISTOLA vs CÂMERA DO CELULAR
 # ------------------------------------------------------------------ #
-modo_leitura = st.radio(
+# ⚠️ ALTURA FIXA de proposito. Antes era `200 if tem_leitura else 420`, e a
+# mudanca de altura fazia o Streamlit DESTRUIR e recriar o iframe a cada
+# leitura — a camera reiniciava do zero e o operador esperava. Com altura
+# constante o iframe sobrevive ao rerun.
+#
+# 🆕 "⚡ Câmera rápida" (28/09, pedido do Jota): mesma câmera de sempre, MAS
+# dentro de um `@st.fragment` — o rerun de cada leitura fica isolado nesse
+# bloco (radio+camera+form), sem reconstruir a pagina inteira. E' um MODO
+# NOVO, ao lado dos dois que ja existiam no app ("🔫 Bipador Físico / Pistola"
+# e "📷 Câmera do Celular") — os dois antigos continuam como estavam, key
+# `scanner_modo_leitura` preservada (e' a que o app ja usava, diferente do
+# origin -- os dois repos tem rotulos proprios aqui, de proposito).
+_modo = st.radio(
     "Dispositivo de Leitura",
-    ["🔫 Bipador Físico / Pistola (Rápido)", "📷 Câmera do Celular (Leitor Óptico)"],
+    ["🔫 Bipador Físico / Pistola (Rápido)", "📷 Câmera do Celular (Leitor Óptico)",
+     "⚡ Câmera rápida"],
     horizontal=True,
     label_visibility="collapsed",
     key="scanner_modo_leitura",
 )
 
-if "📷 Câmera" in modo_leitura:
+
+@st.fragment
+def _bloco_bipagem_rapida() -> None:
+    """Radio+camera+form isolados num fragment -- rerun so' daqui, nao da
+    pagina inteira. So' usado no modo '⚡ Câmera rápida'."""
+    _leitura_continua = st.toggle(
+        "Leitura contínua (sem clicar a cada etiqueta)",
+        value=False, key="cam_rapida_continua",
+        help="Desligado (padrão): aponta e toca em 📸 LER CÓDIGO a cada "
+             "etiqueta -- mesmo jeito de sempre. Ligado: a câmera fica "
+             "sempre escaneando sozinha, sem precisar tocar em nada -- "
+             "mais rápido, mas pode ler algo por engano se a mira passar "
+             "perto de outra etiqueta.",
+    )
+    camera_ao_vivo.render_camera(altura=320, botao_submit="Resolver",
+                                 rearmar=True, continuo=_leitura_continua)
+    if not st.session_state.get("scanner_ultimo_codigo"):
+        st.caption("Aponte a câmera para a etiqueta" +
+                   (" — leitura automática." if _leitura_continua
+                    else " e toque em **📸 LER CÓDIGO**."))
+
+    with st.form("form_bipagem_rapida", clear_on_submit=True):
+        codigo_digitado = st.text_input(
+            "Código da etiqueta",
+            placeholder="Ex: AP296430628BR  ou  260802B4MD9MHU",
+            label_visibility="collapsed",
+            key="inp_bipagem_rapida",
+        )
+        if st.form_submit_button("🔍 Resolver", use_container_width=True,
+                                 type="primary"):
+            if codigo_digitado and codigo_digitado.strip():
+                _processar_codigo(codigo_digitado)
+                st.rerun(scope="fragment")
+
+
+if _modo.startswith("⚡"):
+    _bloco_bipagem_rapida()
+elif "📷 Câmera" in _modo:
     # Renderiza o componente de vídeo apenas quando o usuário escolher a câmera
     camera_ao_vivo.render_camera(altura=320, botao_submit="Resolver", rearmar=True)
     if not tem_leitura:
@@ -825,17 +875,22 @@ else:
 # componente nao pode navegar na URL do pai (falta allow-top-navigation no
 # sandbox do Streamlit), entao ele preenche este campo e dispara o submit.
 # Serve tambem pra digitacao manual e pra pistola Bluetooth.
-with st.form("form_bipagem", clear_on_submit=True):
-    codigo_digitado = st.text_input(
-        "Código da etiqueta",
-        placeholder="Ex: AP296430628BR  ou  260802B4MD9MHU  ou só 3 letras/números do código",
-        label_visibility="collapsed",
-        key="inp_bipagem",
-    )
-    if st.form_submit_button("🔍 Resolver", use_container_width=True, type="primary"):
-        if codigo_digitado and codigo_digitado.strip():
-            _processar_codigo(codigo_digitado)
-            st.rerun()
+#
+# ⚠️ So' aparece FORA do modo "⚡ Câmera rápida": esse modo tem o proprio
+# form dentro do fragment acima (precisa estar dentro pra o rerun isolado
+# funcionar). Ter os dois forms visiveis ao mesmo tempo duplicaria o campo.
+if not _modo.startswith("⚡"):
+    with st.form("form_bipagem", clear_on_submit=True):
+        codigo_digitado = st.text_input(
+            "Código da etiqueta",
+            placeholder="Ex: AP296430628BR  ou  260802B4MD9MHU  ou só 3 letras/números do código",
+            label_visibility="collapsed",
+            key="inp_bipagem",
+        )
+        if st.form_submit_button("🔍 Resolver", use_container_width=True, type="primary"):
+            if codigo_digitado and codigo_digitado.strip():
+                _processar_codigo(codigo_digitado)
+                st.rerun()
 
 # Guarda de foco: o cursor sai deste campo sozinho a cada rerun/re-arme da
 # camera, e a pistola passa a digitar no vazio. O JS repoe o cursor aqui e
