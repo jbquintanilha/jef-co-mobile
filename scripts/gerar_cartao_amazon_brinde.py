@@ -29,7 +29,8 @@ def carregar_b64(caminho: Path) -> str:
 def montar_html_amazon_brinde() -> str:
     logo_b64 = carregar_b64(ASSETS_DIR / "flatten_clean_20.png")
     mimo_b64 = carregar_b64(ASSETS_DIR / "flatten_clean_22.png")
-    qr_b64 = carregar_b64(ASSETS_DIR / "img_16.png")
+    # Sem QR code nem WhatsApp no rodape (Jota, 03/10/2026): o QR levava fluxo
+    # para um canal que ainda nao esta pronto. Duvidas so' pelo atendimento da Amazon.
 
     return f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -152,9 +153,9 @@ def montar_html_amazon_brinde() -> str:
     width: 100%;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: center;
     gap: 2mm;
-    text-align: left;
+    text-align: center;
     margin-top: 0.5mm;
   }}
   .texto-suporte {{
@@ -162,12 +163,6 @@ def montar_html_amazon_brinde() -> str:
     font-weight: 700;
     line-height: 1.26;
     flex: 1;
-  }}
-  .qr-code {{
-    width: 16mm;
-    height: 16mm;
-    object-fit: contain;
-    flex-shrink: 0;
   }}
   .assinatura-maite {{
     font-size: 8.8pt;
@@ -210,9 +205,8 @@ def montar_html_amazon_brinde() -> str:
     
     <div class="bloco-rodape">
       <div class="texto-suporte">
-        Dúvidas? Nos chame no atendimento ao cliente da Amazon ou pelo nosso WhatsApp — aponte para o QR code ao lado. Estamos aqui para lhe entregar a melhor experiência!
+        Dúvidas? Nos chame no atendimento ao cliente da Amazon. Estamos aqui para lhe entregar a melhor experiência possível!
       </div>
-      <img src="{qr_b64}" class="qr-code" alt="QR Code J&F Co.">
     </div>
     
     <div class="assinatura-maite">Com carinho, Maitê 🖤</div>
