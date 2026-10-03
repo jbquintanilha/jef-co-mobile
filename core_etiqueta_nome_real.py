@@ -455,15 +455,70 @@ def mapa_por_pedido_tiktok(order_ids: list[str]) -> dict[str, tuple[str, str]]:
     return mapa
 
 
+def mapa_por_pedido_olist(situacoes: list[int] | None = None,
+                          somente: set[str] | None = None) -> dict[str, tuple[str, str]]:
+    """{numero_ecommerce: (nome_civil, nome_civil)} — nome do cadastro do Olist.
+
+    Mesmo formato de `mapa_por_pedido_tiktok()` e de
+    `core_nome_civil_nfe.mapa_por_pedido()`, para ser intercambiavel.
+
+    **Por que existe:** `mapa_do_olist()` casava pelo NOME IMPRESSO, lido de
+    `enderecoEntrega.nomeDestinatario`. Em 23/09/2026 esse bloco passou a
+    vir **`null`** na API (`GET /pedidos/{id}` devolve
+    `"enderecoEntrega": null`), entao o mapa saia sempre vazio e nenhuma
+    etiqueta era corrigida — silenciosamente.
+
+    `cliente.nome` continua trazendo o nome civil (o mesmo do CPF). A ponte
+    passa a ser `ecommerce.numeroPedidoEcommerce`, que e' exatamente o
+    `numero_ecommerce` com que a esteira ja' raciocina — casar por pedido
+    tambem elimina o risco de colisao por substring que existia ao casar
+    por nome.
+
+    ⚡ **So' a LISTAGEM basta.** `GET /pedidos` ja' devolve `cliente.nome` e
+    `ecommerce.numeroPedidoEcommerce` em cada item -- nao precisa de um
+    `GET /pedidos/{id}` por pedido. A primeira versao (23/09) detalhava um
+    a um e custava ~40s; a listagem resolve em ~1s (medido 24/09, depois
+    que o Jota reportou a esteira lenta).
+
+    Args:
+        situacoes: situacoes do Olist a varrer. Padrao `[4]`.
+        somente: se informado, so' devolve estes `numero_ecommerce`.
+    """
+    from core_olist import OlistClient
+
+    cliente = OlistClient()
+    mapa: dict[str, tuple[str, str]] = {}
+
+    for situacao in (situacoes or [4]):
+        try:
+            pedidos = cliente.listar_pedidos(situacao=situacao, limit=100) or []
+        except Exception as exc:
+            log.warning("Situacao %s indisponivel: %s", situacao, exc)
+            continue
+
+        for pedido in pedidos:
+            ecom = ((pedido.get("ecommerce") or {})
+                    .get("numeroPedidoEcommerce") or "").strip()
+            civil = ((pedido.get("cliente") or {}).get("nome") or "").strip()
+            if not (ecom and civil):
+                continue
+            if somente is not None and ecom not in somente:
+                continue
+            mapa[ecom] = (civil, civil)
+
+    return mapa
+
+
 def mapa_do_olist(situacoes: list[int] | None = None) -> dict[str, str]:
     """{nome_na_etiqueta: nome_civil} a partir dos pedidos do Olist.
 
-    ⚠️ Fallback. Prefira `mapa_do_tiktok()` — mesma informacao, uma chamada
-    em lote em vez de uma por pedido (~200s -> poucos segundos).
+    🔴 **QUEBRADA desde 23/09/2026** — `enderecoEntrega` vem `null` na API,
+    entao `nomeDestinatario` e' sempre vazio e o mapa sai vazio. Use
+    `mapa_por_pedido_olist()`, que casa por numero de pedido.
 
-    O Olist guarda os dois: `enderecoEntrega.nomeDestinatario` e' o que a
-    plataforma mandou (o nick), e `cliente.nome` e' o nome civil do cadastro
-    — o mesmo que tem o CPF usado na NF-e.
+    Mantida porque o formato {impresso: civil} ainda e' usado por
+    `completar_nomes()`; volta a funcionar sozinha se a Olist restaurar o
+    bloco de endereco.
     """
     from concurrent.futures import ThreadPoolExecutor
 

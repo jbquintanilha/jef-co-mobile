@@ -270,7 +270,19 @@ def gerar_montagem_10x15(
         g = str(p.get("combinacao") or p.get("grupo") or "")
         itens = p.get("itens") or []
         multi = len(itens) > 1
-        alt = 11 + (8 * (len(itens) - 1) if multi else 0)
+        # ⚠️ A ultima linha de um item multi e' escrita em y+7+8*(n-1) (ver
+        # loop de renderizacao abaixo) e a fonte de 6pt precisa de ~4pt de
+        # descender/respiro pra nao encostar no proximo elemento. `alt` tem
+        # que reservar esse espaco INTEIRO -- senao o cabecalho do proximo
+        # grupo desenha o retangulo de fundo por cima da ultima linha do
+        # item anterior, apagando-a visualmente (achado 25/09: pedido #1024
+        # sumia a 2a linha "1x Meia Med 40/46 Preto", coberta pelo cabecalho
+        # do grupo seguinte -- o texto CONTINUAVA no PDF, extraivel, so' nao
+        # aparecia porque o rect era desenhado por cima).
+        # Medido 25/09 (bbox real): +4 ainda deixava a ultima linha 1,8pt
+        # DENTRO da faixa seguinte. 11 + 8*n da' a mesma folga (~2pt) que a
+        # linha simples tem.
+        alt = 11 + (8 * len(itens) if multi else 0)
 
         if g != grupo:
             if y + alt + 16 > A - M:
@@ -435,7 +447,12 @@ def gerar_lista_montagem(
 
         itens = p.get("itens") or []
         multi = len(itens) > 1
-        alt = 15 + (11 * (len(itens) - 1) if multi else 0)
+        # ⚠️ Mesmo bug corrigido em gerar_montagem_10x15 (achado 25/09): a
+        # ultima linha de um item multi e' escrita em y+11+11*n (ver loop
+        # abaixo), mas `alt` so' reservava y+15+11*(n-1) -- ficava CURTO,
+        # o proximo elemento (zebra/cabecalho) desenhava por cima da ultima
+        # linha. +11 de folga cobre a linha inteira mais respiro da fonte.
+        alt = 15 + (11 * (len(itens) - 1) + 14 if multi else 0)
         espaco(alt + 4)
 
         if i % 2 == 0:

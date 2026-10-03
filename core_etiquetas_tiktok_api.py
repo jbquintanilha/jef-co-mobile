@@ -241,12 +241,18 @@ def listar_pacotes_a_enviar(
     max_paginas: int = 10,
     *,
     somente_imprimivel: bool = True,
+    parar_ao_achar: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Pacotes que ja tem etiqueta emitida e aguardam despacho.
 
     somente_imprimivel=True (padrao) devolve so os PROCESSING — os unicos que
     ainda aceitam impressao de etiqueta. FULFILLING/COMPLETED ja foram
     coletados; CANCELLED nao interessa.
+
+    parar_ao_achar: ids de pacote procurados. Para de paginar assim que todos
+        aparecerem. Sem isso, varrer o historico inteiro custa ~19s (300
+        pacotes, 6 paginas) mesmo quando so' 3 interessam — foi o que deixou
+        a esteira lenta em 24/09.
     """
     _checar_credenciais()
     path = "/fulfillment/202309/packages/search"
@@ -267,6 +273,10 @@ def listar_pacotes_a_enviar(
         data = resp.get("data") or {}
         lote = data.get("packages") or []
         pacotes.extend(lote)
+
+        if parar_ao_achar and parar_ao_achar <= {str(p.get("id") or "")
+                                                 for p in pacotes}:
+            break
 
         cursor = data.get("next_page_token") or ""
         if not cursor or not lote:

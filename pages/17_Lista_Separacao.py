@@ -8,6 +8,11 @@
 # DATA: 16/08/2026
 # AUTOR: Terminador (001) / Claude  (v1.0: Violino/Gemini CLI)
 # REF: fases definidas pelo Jota em 2026-08-16
+#
+# ⛔ LEIA ANTES DE MEXER: `pages/ESTEIRA_EXPEDICAO.md`
+#    Logica das ONDAS, fluxo de dados, armadilhas ja' documentadas e o
+#    HISTORICO DE VERSOES. Toda alteracao aqui escreve uma entrada la'.
+#    Cada regra daquele documento custou um incidente real na bancada.
 # ==============================================================================
 """
 As 7 fases (ordem definida pelo Jota):
@@ -67,6 +72,12 @@ FASES = [
     "6️⃣ Bipagem",
     "7️⃣ Conferência",
 ]
+
+# Fila da termica de rolo. "LABEL 2 BT" fala por Bluetooth (porta COM6, sem
+# cabo na bancada); "LABEL 2" e' a mesma impressora no USB, caso o BT caia.
+# O link BT dorme quando fica ocioso, entao `imprimir_pdf_direto` ja' repete
+# a tentativa sozinho -- ninguem precisa reconectar nada na mao.
+IMPRESSORA_ETIQUETA = "LABEL 2 BT"
 
 # ---------------------------------------------------------------------------- #
 # Estado
@@ -433,7 +444,7 @@ def _painel_adicionar(ondas, _pend, _todos, _slots, _por_slot, _rotulo,
     import streamlit as st
 
     if not _pend:
-        st.info("✅ Nenhum pedido pendente — tudo já está em alguma onda.")
+        st.caption("ℹ️ Nenhum pedido pendente na fila livre para associar a ondas no momento.")
         return False
 
     # Contagem por plataforma ANTES do filtro: e' o que o Jota quer ver de
@@ -559,35 +570,32 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
     A trava ESCONDE o resto (decisao do Jota): meia-trava traria de volta a
     confusao de nao saber em que conjunto se esta' mexendo.
     """
-    _dados_onda = st.session_state.get("dados_separacao")
-    if not _dados_onda or not isinstance(_dados_onda, dict):
-        st.caption(
-            "🌊 Sincronize a fila (botão abaixo) para ver as ondas já "
-            "processadas e organizar os pedidos em slots."
-        )
-        return [], [], []
-
     try:
         import core_ondas_supabase as ondas
     except Exception as err:
         st.warning(f"Aviso ao carregar módulo de ondas: {err}")
         return [], [], []
 
-    _todos = (
-        _dados_onda.get("pedidos_simples_1un", [])
-        + _dados_onda.get("pedidos_simples_multi_un", [])
-        + _dados_onda.get("pedidos_multi_itens", [])
-    )
+    _dados_onda = st.session_state.get("dados_separacao")
+    if isinstance(_dados_onda, dict):
+        _todos = (
+            _dados_onda.get("pedidos_simples_1un", [])
+            + _dados_onda.get("pedidos_simples_multi_un", [])
+            + _dados_onda.get("pedidos_multi_itens", [])
+        )
+    else:
+        _todos = []
 
     # ⚠️ `limpar_despachados` NAO roda aqui de proposito. A versao antiga
     # (`limpar_ausentes`) rodava a cada render e apagava tudo que nao
     # estivesse na lista recebida — com sincronizacao parcial, varria a onda
     # inteira em silencio. Era a causa nº 1 do "as vezes esta, as vezes nao".
     # A limpeza agora e' um botao explicito, mais abaixo.
-    try:
-        ondas.marcar(_todos)
-    except Exception as err:
-        st.warning(f"Ondas indisponíveis: {err}")
+    if _todos:
+        try:
+            ondas.marcar(_todos)
+        except Exception as err:
+            st.warning(f"Ondas indisponíveis: {err}")
 
     _pend = [p for p in _todos if not p.get("onda")]
     _feitos = [p for p in _todos if p.get("onda")]
@@ -601,9 +609,14 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
     # bipagem, selecoes). Este botao so' re-busca a fila e mantem o resto.
     _c_at1, _c_at2 = st.columns([3, 1])
     with _c_at1:
-        st.caption(
-            f"⏳ **{len(_pend)} a processar** · ✅ {len(_feitos)} já em onda"
-        )
+        if _todos:
+            st.caption(
+                f"⏳ **{len(_pend)} a processar** · ✅ {len(_feitos)} já em onda"
+            )
+        else:
+            st.caption(
+                "⏳ **0 pedidos na fila livre do Olist** · Selecione ou gerencie as ondas abaixo:"
+            )
     with _c_at2:
         if st.button("🔄 Atualizar fila", use_container_width=True,
                      key=f"btn_refresh_fila_{chave}",
@@ -654,6 +667,11 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
             _num_onda = set()
         _alvo = [p for p in _todos
                  if str(p.get("numero_ecommerce") or "").upper() in _num_onda]
+        if not _alvo and not _info.get("vazio"):
+            try:
+                _alvo = ondas.pedidos_info_do_slot(_travada)
+            except Exception:
+                pass
         try:
             _feitas = ondas.fases_do_slot(_travada)
         except Exception:
@@ -666,8 +684,9 @@ def _widget_ondas(chave: str) -> tuple[list, list, list]:
                 "selecione os pedidos e salve nesta onda."
             )
         else:
+            _qtd_alvo = len(_alvo) if _alvo else _info.get("pedidos", 0)
             st.success(
-                f"🔒 **Onda {_travada} travada** — {len(_alvo)} pedido(s). "
+                f"🔒 **Onda {_travada} travada** — {_qtd_alvo} pedido(s). "
                 "As 7 fases estão operando só sobre ela."
                 + (f"\n\nJá concluído: {' · '.join(_nomes_ok)}" if _nomes_ok else "")
             )
@@ -988,6 +1007,16 @@ if fase(0):
                     r_tudo = cet.baixar_tudo(canais=_canais_marcados,
                                              com_cartao=com_cartao_tudo,
                                              somente=st.session_state.get("ciclo_selecionado"))
+
+                    # Guarda os individuais fora do Downloads para a Fase 3
+                    # reaproveitar sem baixar de novo (~38s). `guardar()` ja'
+                    # limpa a rodada anterior — nada de lixo acumulado.
+                    try:
+                        import core_etiquetas_cache as _cache_etq
+                        r_tudo = _cache_etq.guardar(r_tudo)
+                    except Exception as _exc_cache:
+                        st.caption(f"⚠️ Cache de etiquetas indisponível: {_exc_cache}")
+
                     st.session_state["etq_tudo"] = r_tudo
 
                     if r_tudo["pdf"]:
@@ -1056,7 +1085,7 @@ if fase(0):
                 try:
                     import separador_etiquetas as se
                     pgs = se.imprimir_pdf_direto(
-                        st.session_state["pdf_tudo_path"], impressora="LABEL 2")
+                        st.session_state["pdf_tudo_path"], impressora=IMPRESSORA_ETIQUETA)
                     st.toast(f"🖨️ {pgs} páginas enviadas.", icon="✅")
                 except Exception as exc:
                     erro_visivel("1️⃣ Etiquetas", "Impressão na LABEL 2 falhou", exc)
@@ -1430,7 +1459,7 @@ if fase(1):
                                                              suffix=".pdf") as th:
                                 th.write(st.session_state["montagem_1015_pdf"])
                                 cam = th.name
-                            pgs = se.imprimir_pdf_direto(cam, impressora="LABEL 2")
+                            pgs = se.imprimir_pdf_direto(cam, impressora=IMPRESSORA_ETIQUETA)
                             st.toast(f"🖨️ {pgs} página(s) enviada(s).", icon="✅")
                         except Exception as exc:
                             erro_visivel("2️⃣ Separar",
@@ -1486,7 +1515,7 @@ if fase(1):
                                     delete=False, suffix=".pdf") as th:
                                 th.write(st.session_state["lista_pdf"])
                                 caminho = th.name
-                            pgs = se.imprimir_pdf_direto(caminho, impressora="LABEL 2")
+                            pgs = se.imprimir_pdf_direto(caminho, impressora=IMPRESSORA_ETIQUETA)
                             st.toast(f"🖨️ {pgs} página(s) enviada(s).", icon="✅")
                         except Exception as exc:
                             erro_visivel("2️⃣ Separar",
@@ -1588,6 +1617,13 @@ if fase(2):
             "🪪 Nome civil", value=True, key="chk_nome_real",
             help='Apelido vira "Thata (Aurora Machado)". '
                  "Nome já correto ou abreviado não é tocado.")
+        # Por padrao a pilha reaproveita o que a Fase 1 baixou — poupa ~38s.
+        # So' vale quando o cache COBRE a onda inteira; qualquer pedido
+        # faltando e ele baixa sozinho (ver `core_etiquetas_cache`).
+        st.checkbox(
+            "⬇️ Rebaixar etiquetas", value=False, key="rebaixar_etq",
+            help="Normalmente a pilha reaproveita o download da Fase 1. "
+                 "Marque para ignorar e buscar tudo de novo nas APIs.")
     with col_p:
         if st.button("🔢 Gerar pilha numerada na ordem da esteira",
                      type="primary", use_container_width=True,
@@ -1605,7 +1641,9 @@ if fase(2):
 
                 r_es = cne.gerar(com_cartao=cartao_esteira,
                                  nome_real=nome_real_esteira,
-                                 somente=_so)
+                                 somente=_so,
+                                 cache_fase1=st.session_state.get("etq_tudo"),
+                                 rebaixar=st.session_state.get("rebaixar_etq", False))
 
                 prog_bar.progress(80, text="⏳ [3/4] Aplicando sequência da esteira e numeração #1..#N... (80%)")
 
@@ -1615,6 +1653,11 @@ if fase(2):
                     st.session_state["pdf_esteira_path"] = r_es["pdf"]
                     prog_bar.progress(100, text="✅ [4/4] Pilha numerada pronta para impressão! (100%)")
                     st.success(f"✅ {r_es['resumo']}")
+                    if r_es.get("reaproveitado"):
+                        st.caption("⚡ Etiquetas reaproveitadas da Fase 1 — "
+                                   "sem baixar de novo.")
+                    elif r_es.get("motivo_cache"):
+                        st.caption(f"⬇️ Baixou das APIs: {r_es['motivo_cache']}.")
                     if r_es.get("nomes_corrigidos"):
                         st.info(
                             f"🪪 {r_es['nomes_corrigidos']} etiqueta(s) "
@@ -1647,6 +1690,18 @@ if fase(2):
             file_name=f"etiquetas_esteira_{datetime.now():%Y%m%d_%H%M}.pdf",
             mime="application/pdf", use_container_width=True,
             key="dl_pilha_esteira")
+
+        if st.button("🖨️ Imprimir na LABEL 2", use_container_width=True,
+                     key="btn_print_pilha_esteira"):
+            try:
+                import separador_etiquetas as se
+                pgs = se.imprimir_pdf_direto(
+                    st.session_state["pdf_esteira_path"],
+                    impressora=IMPRESSORA_ETIQUETA)
+                st.toast(f"🖨️ {pgs} páginas enviadas.", icon="✅")
+            except Exception as exc:
+                erro_visivel("3️⃣ Etiq + Cartão",
+                             "Impressão da pilha numerada falhou", exc)
 
     st.divider()
     st.markdown("#### 🎁 A partir das etiquetas já baixadas na fase 1")
@@ -1696,7 +1751,7 @@ if fase(2):
                         import separador_etiquetas as se
                         pgs = se.imprimir_pdf_direto(
                             st.session_state[f"pdf_{canal}_cartao_path"],
-                            impressora="LABEL 2")
+                            impressora=IMPRESSORA_ETIQUETA)
                         st.toast(f"🖨️ {pgs} páginas enviadas à LABEL 2.", icon="✅")
                     except Exception as exc:
                         erro_visivel("3️⃣ Etiq + Cartão", "Impressão na LABEL 2 falhou", exc)
@@ -1754,7 +1809,7 @@ if fase(2):
                              use_container_width=True, key="btn_print_compilado"):
                     try:
                         import separador_etiquetas as se
-                        pgs = se.imprimir_pdf_direto(pronto, impressora="LABEL 2")
+                        pgs = se.imprimir_pdf_direto(pronto, impressora=IMPRESSORA_ETIQUETA)
                         st.toast(f"🖨️ {pgs} páginas enviadas.", icon="✅")
                     except Exception as exc:
                         erro_visivel("3️⃣ Etiq + Cartão", "Impressão na LABEL 2 falhou", exc)

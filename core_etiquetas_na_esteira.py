@@ -155,11 +155,25 @@ def _recompor_com_faixa_numero(doc, idx: int, texto_num: str, texto_sku: str = "
 
 
 
-def _mapa_tiktok() -> dict[str, str]:
+def _mapa_tiktok(pacotes_presentes: set[str] | None = None) -> dict[str, str]:
     """package_id -> numero do pedido no marketplace.
 
     A etiqueta do TikTok e' nomeada pelo PACOTE, mas a esteira raciocina em
     PEDIDO. Sem esta ponte as etiquetas do TikTok nunca casariam.
+
+    ⚠️ `somente_imprimivel=False` de proposito. O padrao (`True`) devolve so'
+    os pacotes em PROCESSING -- os unicos que ainda aceitam IMPRIMIR
+    etiqueta. Mas aqui nao se imprime nada: so' se traduz pacote -> pedido,
+    e isso vale para qualquer status. Com o filtro ligado a API devolvia
+    **3 pacotes** contra **300** sem ele (medido 23/09/2026); todo pedido
+    ja' despachado perdia a traducao, caia no fim da pilha como "sem
+    posicao" e ficava sem o nome civil na etiqueta.
+
+    Args:
+        pacotes_presentes: ids dos pacotes que REALMENTE tem etiqueta neste
+            lote. Para de paginar assim que todos forem encontrados -- sem
+            isso a varredura completa custava ~16s para traduzir 3 pacotes
+            (regressao medida 24/09, depois de tirar o filtro).
     """
     try:
         import core_etiquetas_tiktok_api as tt
@@ -169,7 +183,10 @@ def _mapa_tiktok() -> dict[str, str]:
 
     mapa: dict[str, str] = {}
     try:
-        for pacote in (tt.listar_pacotes_a_enviar() or []):
+        lista = tt.listar_pacotes_a_enviar(
+            somente_imprimivel=False,
+            parar_ao_achar=pacotes_presentes or None) or []
+        for pacote in lista:
             pid = str(pacote.get("id") or "")
             for pedido in (pacote.get("orders") or []):
                 oid = str(pedido.get("id") or "")
@@ -339,7 +356,9 @@ def gerar(*, com_cartao: bool = False,
           nome_real: bool = True,
           somente: set[str] | None = None,
           saida: str | Path | None = None,
-          numerar: bool = True) -> dict[str, Any]:
+          numerar: bool = True,
+          cache_fase1: dict[str, Any] | None = None,
+          rebaixar: bool = False) -> dict[str, Any]:
     """PDF unico, dois canais, ordem da esteira, numerado #1..#N.
 
     Args:
@@ -365,8 +384,25 @@ def gerar(*, com_cartao: bool = False,
 
     inicio = time.time()
 
-    # 1. Baixa os canais (TikTok + Shopee + ML + Amazon) em paralelo
-    baixado = todas.baixar_tudo(canais=["tiktok", "shopee", "ml", "amazon"], com_cartao=com_cartao, somente=somente)
+    # 1. Etiquetas dos três canais — reaproveitando a Fase 1 quando ela
+    #    COBRE este lote. Ver `core_etiquetas_cache`: a regra e' cobertura
+    #    exata, nao "tem cache?", porque a onda define o escopo e pedido
+    #    novo nao pode entrar num lote ja' separado.
+    import core_etiquetas_cache as cache_etq
+
+    # A ponte pacote->pedido precisa existir ANTES de validar o cache: o
+    # cache do TikTok guarda package_id, mas `somente` fala em order_id.
+    _mapa_tt_cache = None
+    if somente and cache_fase1 and not rebaixar:
+        _info_tt_c = (cache_fase1.get("por_canal") or {}).get("tiktok") or {}
+        _pac_c = {Path(a).stem for a in (_info_tt_c.get("arquivos") or [])}
+        if _pac_c:
+            _mapa_tt_cache = _mapa_tiktok(_pac_c)
+
+    baixado = cache_etq.baixar_ou_reaproveitar(
+        canais=["tiktok", "shopee", "ml", "amazon"], com_cartao=com_cartao,
+        somente=somente, cache=cache_fase1, mapa_tt=_mapa_tt_cache,
+        forcar=rebaixar)
     if not baixado.get("pdf"):
         # Mesmas chaves do caminho feliz: a tela le `resumo` e `erros` sem
         # checar, e um dict curto aqui quebraria a pagina com KeyError.
@@ -379,7 +415,10 @@ def gerar(*, com_cartao: bool = False,
     # 2. De qual pedido e' cada arquivo individual
     import core_etiqueta_com_cartao as ccc
 
-    mapa_tt = _mapa_tiktok()
+    # So' os pacotes que tem etiqueta neste lote precisam de traducao.
+    _info_tt = (baixado.get("por_canal") or {}).get("tiktok") or {}
+    _presentes = {Path(a).stem for a in (_info_tt.get("arquivos") or [])}
+    mapa_tt = _mapa_tiktok(_presentes or None)
     arquivos: list[tuple[str, str]] = []   # (caminho, numero_do_pedido)
 
     for canal in ("tiktok", "shopee", "ml", "amazon"):
@@ -474,11 +513,50 @@ def gerar(*, com_cartao: bool = False,
     # fica como reserva, para o caso de voltar a responder.
     mapa_pedido_civil = {}
     if nome_real:
+        # A pasta de XMLs era alimentada a MAO e ficou 23 dias parada
+        # (31/08 -> 23/09/2026): todo pedido de setembro saiu com o apelido
+        # do TikTok porque o mapa vinha vazio, sem erro nenhum.
+        #
+        # ⚡ Sincroniza no MAXIMO 1x por dia. Varrer 800 notas custa ~10s e
+        # nao muda nada entre duas geracoes seguidas -- o Jota reportou a
+        # esteira lenta em 24/09 e este era um dos culpados. O Olist ja' e'
+        # a fonte primaria do nome (abaixo); a NF-e cobre o historico.
+        try:
+            import core_nfe_sync as sync_nfe
+            _idade, _ = sync_nfe.idade_do_acervo()
+            if _idade is None or _idade >= 1:
+                r_sync = sync_nfe.sincronizar(dias=45)
+                if r_sync["baixados"]:
+                    log.info("NF-e sincronizadas: %d nova(s)", r_sync["baixados"])
+        except Exception as exc:
+            log.warning("Sync de NF-e falhou (segue com o que ja' esta' em disco): %s", exc)
+
         try:
             mapa_pedido_civil = nfe.mapa_por_pedido() or {}
             log.info("Nomes civis da NF-e: %d pedido(s)", len(mapa_pedido_civil))
         except Exception as exc:
             log.warning("Nomes civis via NF-e indisponiveis: %s", exc)
+
+        # ⭐ O Olist SOBRESCREVE a NF-e, de proposito.
+        #
+        # No TikTok a nota e' emitida com o APELIDO no `xNome` (medido
+        # 23/09/2026: "Deliiciasdapri77" e "Gustavo", ambos com CPF valido
+        # ao lado), enquanto `cliente.nome` no Olist traz o nome do
+        # cadastro -- o mesmo do CPF:
+        #
+        #   586221382076499950  NF-e "Deliiciasdapri77"
+        #                       Olist "Priscila Cristina Alves"  <- correto
+        #
+        # Como a NF-e so' erra para menos (nunca inventa nome que o cadastro
+        # nao tenha), deixar o Olist ganhar e' seguro: onde a nota ja' esta'
+        # certa os dois dizem a mesma coisa.
+        try:
+            do_olist = cnr.mapa_por_pedido_olist([4, 7]) or {}
+            mapa_pedido_civil.update(do_olist)
+            log.info("Nomes civis do Olist: %d pedido(s)", len(do_olist))
+        except Exception as exc:
+            log.warning("Nomes civis via Olist indisponiveis: %s", exc)
+            do_olist = {}
 
         if not mapa_pedido_civil:
             try:
@@ -595,23 +673,30 @@ def gerar(*, com_cartao: bool = False,
             "é este o motivo."
         )
 
-    # 7. Limpa os PDFs por canal que o `baixar_tudo` deixou na pasta.
-    # Sem isto cada clique enche o Downloads com 4-6 arquivos e o operador
-    # perde qual e' o bom (Jota, 19/08: "baixou varias versoes na pasta").
+    # 7. Limpa os PDFs intermediarios que sobram no Downloads.
+    #
+    # Sem isto cada clique enche a pasta e o operador perde qual e' o bom
+    # (Jota, 19/08: "baixou varias versoes na pasta"; 24/09: "o lixo nao
+    # deveria ficar"). Medido em 24/09: **6 arquivos por rodada**, e a
+    # versao anterior desta limpeza pegava so' 2 — os `_10x15` e
+    # `_10x15_com_cartao` escapavam porque nao estavam na lista de sufixos.
+    #
     # O `destino` NUNCA entra na lista — e' justamente o que ficou pronto.
-    for canal in ("tiktok", "shopee"):
-        for sufixo in ("", "_com_cartao"):
-            pdf_canal = (baixado.get("por_canal") or {}).get(canal, {}).get("pdf")
-            if not pdf_canal:
-                continue
-            alvo = Path(str(pdf_canal).replace(".pdf", f"{sufixo}.pdf"))
+    _sufixos = ("", "_com_cartao", "_10x15", "_10x15_com_cartao")
+    for canal in ("tiktok", "shopee", "ml"):
+        pdf_canal = (baixado.get("por_canal") or {}).get(canal, {}).get("pdf")
+        if not pdf_canal:
+            continue
+        base = str(pdf_canal)[:-4] if str(pdf_canal).endswith(".pdf") else str(pdf_canal)
+        for sufixo in _sufixos:
+            alvo = Path(f"{base}{sufixo}.pdf")
             if alvo.exists() and alvo.resolve() != destino.resolve():
                 try:
                     alvo.unlink()
                 except OSError:
                     pass
 
-    # O `_10x15` que a normalizacao cria como copia tambem sobra
+    # O `_10x15` que a normalizacao cria como copia do PDF FINAL tambem sobra
     resto = destino.with_name(destino.stem + "_10x15.pdf")
     if resto.exists():
         try:
@@ -623,6 +708,18 @@ def gerar(*, com_cartao: bool = False,
     resumo = f"{len(arquivos)} etiquetas na ordem da esteira"
     if nomes_corrigidos:
         resumo += f" · {nomes_corrigidos} com nome civil acrescentado"
+    elif nome_real and mapa_tt and not mapa_pedido_civil:
+        # ⚠️ ARMADILHA DOCUMENTADA (_INBOX/Aprendizado_20260923_Etiqueta_
+        # Nome_Civil_3_Falhas.md): a FONTE vazia e' o sinal de que quebrou de
+        # novo -- ficou 23 dias assim sem ninguem ver.
+        #
+        # Zero correcoes com a fonte CHEIA e' normal: quer dizer que ninguem
+        # no lote usava apelido (`e_apelido()` recusa nome ja' civil). Alertar
+        # nesse caso era falso positivo -- apareceu na primeira geracao depois
+        # da correcao, com os 3 pedidos do lote tendo nome real.
+        resumo += " · ⚠️ fonte de nome civil vazia (pode ter quebrado)"
+        log.warning("Fonte de nome civil vazia em lote com %d pacote(s) "
+                    "TikTok — conferir mapa_por_pedido_olist()", len(mapa_tt))
     if fora:
         resumo += f" · {fora} fora da sequência (no fim da pilha)"
 
@@ -638,6 +735,10 @@ def gerar(*, com_cartao: bool = False,
                  + ([erro_blindagem] if erro_blindagem else []),
         "segundos": segundos,
         "resumo": resumo,
+        # A tela avisa se a pilha veio do cache da Fase 1 ou de download —
+        # decisao de performance nao pode ser silenciosa.
+        "reaproveitado": baixado.get("reaproveitado", False),
+        "motivo_cache": baixado.get("motivo_cache", ""),
     }
 
 

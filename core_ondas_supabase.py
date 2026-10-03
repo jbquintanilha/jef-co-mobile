@@ -172,6 +172,13 @@ def pedidos_do_slot(slot: int) -> set[str]:
     return {l["numero_ecommerce"] for l in linhas}
 
 
+def pedidos_info_do_slot(slot: int) -> list[dict[str, Any]]:
+    """Itens cadastrados no slot (numero_ecommerce, numero_olist, canal, ordem_impressao)."""
+    s = _valida_slot(slot)
+    return _req("GET", f"{TABELA}?slot=eq.{s}&order=ordem_impressao.asc")
+
+
+
 def fases_do_slot(slot: int) -> dict[int, bool]:
     """{fase: concluida} do slot."""
     s = _valida_slot(slot)

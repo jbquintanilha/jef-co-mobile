@@ -96,16 +96,68 @@ def _classificar(pedido: dict[str, Any]) -> dict[str, Any]:
         # 3 caixas de branca+preta faz as tres seguidas. `atomo_chave` e' a
         # combinacao ordenada, entao pedidos com a mesma mistura se agrupam.
         combinacao = " + ".join(sorted(distintos))
+
+        # 🆕 25/09/2026 — Ordenacao fisica de bancada (aprovado /conselho
+        # secao 23, chave de sort do Monge). Antes o multi-item ordenava
+        # so' pela string `combinacao` -- coincidencia de alfabeto, sem
+        # relacao com o deslocamento real do operador entre prateleiras.
+        #
+        # ⚠️ CORRECAO 25/09: a proposta original usava `extrair_familia`
+        # (MEIAS/CALCINHAS/...), mas essa granularidade e' GROSSEIRA DEMAIS
+        # pra bancada -- MEINV (Invisivel) e MEMED (Cano Medio) sao ambas
+        # "MEIAS", mas ficam em prateleiras/caixas FISICAS diferentes.
+        # A diferenca real de deslocamento e' a LINHA do produto (SPU+
+        # tamanho, o mesmo criterio 3 ja usado no grupo unico), nao a
+        # familia ampla. Usando linha em vez de familia:
+        #   - is_cross_linha: True se os atomos vem de LINHAS diferentes
+        #     (custa mais passos que ficar na mesma linha/prateleira)
+        #   - peso_familia_dominante: mantido p/ desempate entre combinacoes
+        #     cross-linha (ainda usa a familia ampla como 2o criterio)
+        #   - tem_sortida: algum atomo da combinacao e' cor sortida
+        #     (ainda exige garimpar no monte, mesmo dentro do multi-item)
+        import core_separacao as _cs
+
+        def _linha_do_atomo(atomo: str) -> str:
+            return atomo[:-3] if len(atomo) > 3 else atomo
+
+        def _modelo_da_linha(linha: str) -> str:
+            # Linha sem a grade de tamanho: MEINVMAY1013540 -> MEINVMAY101.
+            # Invisivel FEM 35/40 e MASC 40/46 sao linhas diferentes, mas o
+            # MESMO modelo -- parentes na prateleira (Jota, 25/09: "sao
+            # diferentes, porem mais parecidas que invisivel e cano medio...
+            # junta, mas separa").
+            import re as _re
+            return _re.sub(r"\d{4}$", "", linha)
+
+        linhas_combinacao = {_linha_do_atomo(a) for a in distintos}
+        modelos_combinacao = {_modelo_da_linha(l) for l in linhas_combinacao}
+        is_cross_linha = len(linhas_combinacao) > 1
+        # 0 = mesma linha (1 prateleira) · 1 = mesmo modelo, grades
+        # diferentes (prateleiras vizinhas) · 2 = modelos diferentes
+        nivel_mistura = (0 if len(linhas_combinacao) == 1
+                         else 1 if len(modelos_combinacao) == 1 else 2)
+        familias_combinacao = {_cs.extrair_familia(a) for a in distintos}
+        peso_familia_dominante = min(
+            (_peso_familia(f) for f in familias_combinacao), default=len(ORDEM_FAMILIA)
+        )
+        tem_sortida = any(a.upper().endswith(COR_SORTIDA) for a in distintos)
+
         return {
             "multi": True,
             "atomo_chave": combinacao,
             "familia": "MULTI-ITEM",
-            "linha": combinacao,        # ordena as combinacoes entre si
+            "linha": combinacao,        # mantido p/ exibicao (titulo do grupo na lista)
             "cor": "",
             "sortido": False,
             "total_pecas": total_pecas,
             "unidades": unidades,
             "atomos": atomos,
+            "is_cross_linha": is_cross_linha,
+            "nivel_mistura": nivel_mistura,
+            "modelos_chave": " + ".join(sorted(modelos_combinacao)),
+            "peso_familia_dominante": peso_familia_dominante,
+            "num_distintos": len(distintos),
+            "tem_sortida": tem_sortida,
         }
 
     atomo = next(iter(distintos), "")
@@ -150,15 +202,41 @@ def sequenciar(dados: dict[str, Any]) -> dict[str, Any]:
             info["familia"] = cs.extrair_familia(info["atomo_chave"])
         enriquecidos.append({**pedido, **info})
 
-    enriquecidos.sort(key=lambda p: (
-        p["multi"],                       # 1. multi-item por ultimo
-        _peso_familia(p["familia"]),      # 2. familia (ordem do estoque)
-        p["linha"],                       # 3. linha do produto
-        p["sortido"],                     # 4. sortida fecha a linha
-        p["cor"],                         #    cores em ordem alfabetica
-        p["total_pecas"],                 # 5. kit MENOR primeiro (invertido 26/08)
-        str(p.get("numero_ecommerce") or ""),
-    ))
+    def _chave_sort(p: dict[str, Any]) -> tuple:
+        # O 1o elemento (`p["multi"]`) sempre separa os dois grupos antes de
+        # qualquer outra comparacao -- Python so' olha o 2o elemento da tupla
+        # quando o 1o empata, e como aqui e' sempre False vs True, os dois
+        # ramos abaixo NUNCA sao comparados item-a-item entre si (senao
+        # comparar bool com string quebraria em runtime).
+        if p["multi"]:
+            # 🆕 25/09/2026 — chave aprovada /conselho secao 23 (Monge),
+            # ajustada apos teste real: familia ampla -> nivel de mistura
+            # por linha/modelo (ver _classificar). Substitui a ordenacao por
+            # string alfabetica da combinacao -- Sala de Guerra secao 22-24.
+            # Combinacoes identicas continuam coladas: compartilham todos os
+            # campos antes de `atomo_chave`.
+            return (
+                True,                              # multi-item sempre depois do grupo unico
+                p.get("nivel_mistura", 2),         # mesma linha > mesmo modelo > modelos diferentes
+                p.get("peso_familia_dominante", len(ORDEM_FAMILIA)),
+                p.get("modelos_chave", ""),        # mesma mistura de modelos fica junta
+                p.get("num_distintos", 99),        # menos produtos distintos = mais simples
+                p.get("tem_sortida", False),       # sortida fecha o subgrupo
+                p["atomo_chave"],                  # a mesma combinacao exata, colada
+                p["total_pecas"],                  # peso total crescente, mesmo criterio 5
+                str(p.get("numero_ecommerce") or ""),
+            )
+        return (
+            False,                             # 1. multi-item por ultimo
+            _peso_familia(p["familia"]),      # 2. familia (ordem do estoque)
+            p["linha"],                       # 3. linha do produto
+            p["sortido"],                     # 4. sortida fecha a linha
+            p["cor"],                         #    cores em ordem alfabetica
+            p["total_pecas"],                 # 5. kit MENOR primeiro (invertido 26/08)
+            str(p.get("numero_ecommerce") or ""),
+        )
+
+    enriquecidos.sort(key=_chave_sort)
 
     # Numera e agrupa para a tela
     grupos: list[dict[str, Any]] = []
