@@ -997,68 +997,20 @@ if st.session_state.get("scanner_msg_sync"):
 # origin -- os dois repos tem rotulos proprios aqui, de proposito).
 _modo = st.radio(
     "Dispositivo de Leitura",
-    ["🔫 Bipador Físico / Pistola (Rápido)", "📷 Câmera do Celular (Leitor Óptico)",
-     "⚡ Câmera rápida"],
+    ["🔫 Bipador Físico / Pistola (Rápido)", "📷 Câmera do Celular (Leitor Óptico)"],
     horizontal=True,
     label_visibility="collapsed",
     key="scanner_modo_leitura",
 )
 
 
-@st.fragment
-def _bloco_bipagem_rapida() -> None:
-    """Radio+camera+form do modo '⚡ Câmera rápida'.
-
-    ⚠️ HONESTIDADE TECNICA (28/09): este fragment NAO isola o rerun de
-    verdade hoje. `st.rerun()` sem `scope="fragment"` dispara rerun de APP
-    INTEIRO mesmo de dentro de um fragment (confirmado na doc oficial:
-    https://docs.streamlit.io/develop/api-reference/execution-flow/st.fragment).
-    Como a ficha do produto mora fora deste fragment, mais abaixo na pagina,
-    e so' e' redesenhada num rerun de app inteiro, este form e' obrigado a
-    usar `st.rerun()` simples -- redesenha TUDO, igual aos outros 2 modos,
-    sem isolamento nenhum.
-
-    O ganho real deste modo hoje e' SO': resolucao de camera maior (foco
-    melhor) + toggle de leitura continua sem clique. NAO e' mais rapido no
-    rerun em si.
-    """
-    _leitura_continua = st.toggle(
-        "Leitura contínua (sem clicar a cada etiqueta)",
-        value=False, key="cam_rapida_continua",
-        help="Desligado (padrão): aponta e toca em 📸 LER CÓDIGO a cada "
-             "etiqueta -- mesmo jeito de sempre. Ligado: a câmera fica "
-             "sempre escaneando sozinha, sem precisar tocar em nada -- "
-             "mais rápido, mas pode ler algo por engano se a mira passar "
-             "perto de outra etiqueta.",
-    )
-    camera_ao_vivo.render_camera(altura=320, botao_submit="Resolver",
-                                 rearmar=True, continuo=_leitura_continua)
-    if not st.session_state.get("scanner_ultimo_codigo"):
-        st.caption("Aponte a câmera para a etiqueta" +
-                   (" — leitura automática." if _leitura_continua
-                    else " e toque em **📸 LER CÓDIGO**."))
-
-    with st.form("form_bipagem_rapida", clear_on_submit=True):
-        codigo_digitado = st.text_input(
-            "Código da etiqueta",
-            placeholder="Ex: AP296430628BR  ou  260802B4MD9MHU",
-            label_visibility="collapsed",
-            key="inp_bipagem_rapida",
-        )
-        if st.form_submit_button("🔍 Resolver", use_container_width=True,
-                                 type="primary"):
-            if codigo_digitado and codigo_digitado.strip():
-                _processar_codigo(codigo_digitado)
-                # ⚠️ Achado real (28/09, teste do Jota: "leu, mas nao
-                # carregou — tela ficou vazia sem feedback"). Precisa ser
-                # `st.rerun()` simples: a ficha do produto mora fora deste
-                # fragment e so' redesenha com rerun de app inteiro.
-                st.rerun()
+# 🔁 (04/10/2026) O modo "⚡ Câmera rápida" saiu desta pagina: virou o app dedicado
+# `app_bipagem.py` (URL propria, tela cheia). Os dois modos de leitura abaixo ficam como
+# sempre foram. O codigo da ficha compacta (`_ficha_compacta_html`, CSS `.fc-*`) segue
+# aqui, inerte, ate' a limpeza -- `_modo_compacto` nunca e' True agora.
 
 
-if _modo.startswith("⚡"):
-    _bloco_bipagem_rapida()
-elif "📷 Câmera" in _modo:
+if "📷 Câmera" in _modo:
     # Renderiza o componente de vídeo apenas quando o usuário escolher a câmera
     camera_ao_vivo.render_camera(altura=320, botao_submit="Resolver", rearmar=True)
     if not tem_leitura:
