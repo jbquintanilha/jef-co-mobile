@@ -214,6 +214,8 @@ _resumo_frescor = " · ".join(f"{c} {q}" for c, (_n, q) in sorted(_frescor_da_ba
 # --------------------------------------------------------------------------- #
 if res and res.get("encontrado"):
     badge = ui.tag_canal(res.get("canal") or "")
+    if "aberto_pelo_registro=True" in str(st.session_state.get("bip_diag", "")):
+        st.caption("ℹ️ Aberto direto do registro da nuvem (o resolvedor normal não achou).")
     conferido = res.get("conferido_hoje", False)
     primeiro_nome = (res.get("cliente") or "").strip().split(" ")[0] or "—"
 
@@ -335,6 +337,8 @@ elif tem_leitura:
                    f'<div style="margin:6px 0;">Nenhum pedido casou com <code>{codigo_atual}</code>.</div>'
                    f'<div style="font-size:13px;">💡 Venda recente? A base vem da Esteira: atualize a fila no PC e '
                    f'toque em TENTAR DE NOVO.<br>Base: {_resumo_frescor}</div></div>')
+    if st.session_state.get("bip_diag"):
+        st.caption(f"🔧 {st.session_state['bip_diag']}")
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔄 TENTAR DE NOVO", type="primary", use_container_width=True):

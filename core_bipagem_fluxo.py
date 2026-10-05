@@ -89,6 +89,25 @@ def processar_codigo(codigo: str, forcar: bool = False) -> None:
         import time as _t
         _t.sleep(0.8)
         res_ = resolver.resolver_codigo(limpo)
+    st.session_state["bip_diag"] = ""
+    if not (res_ or {}).get("encontrado"):
+        # Rede de seguranca (05/10/2026): no celular o resolvedor dizia "nao encontrado" para um
+        # rastreio que a base TEM (a lista de 'parecidos' mostrava ele). Se o registro EXATO existe
+        # na nuvem, abre direto por ele em vez de deixar a bancada travada, e anota o motivo.
+        diag = {"len": len(limpo), "repr": repr(limpo)}
+        try:
+            import core_scanner_supabase as _nuvem
+            reg = _nuvem.buscar_rastreio_nuvem(limpo)
+            diag["registro_exato_na_nuvem"] = bool(reg)
+            if reg:
+                try:
+                    res_ = resolver._anexar_status(resolver._montar_resultado_do_registro(reg, origem="nuvem"))
+                    diag["aberto_pelo_registro"] = bool((res_ or {}).get("encontrado"))
+                except Exception as exc:
+                    diag["erro_ao_montar"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+        except Exception as exc:
+            diag["erro_nuvem"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+        st.session_state["bip_diag"] = " · ".join(f"{k}={v}" for k, v in diag.items())
     st.session_state.scanner_resultado = res_
 
     # Som marcado AQUI (na leitura nova), nao no render: o Streamlit re-executa a
