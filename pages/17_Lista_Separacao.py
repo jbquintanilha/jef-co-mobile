@@ -293,6 +293,15 @@ def atualizar_separacao(*, reset: bool = False) -> None:
             st.session_state.pedidos_brutos = pedidos
             st.session_state.dados_separacao = cs.processar_batch_picking(pedidos)
 
+            # 📤 Guarda o DOWNLOAD no Supabase: o PC carrega e o celular abre a mesma fila,
+            # sem baixar tudo de novo (core_esteira_snapshot). Falha de rede nao atrapalha.
+            st.session_state.pop("snapshot_info", None)
+            try:
+                import core_esteira_snapshot as _snap
+                _snap.salvar(pedidos, situacoes_sel, "pc" if os.name == "nt" else "mobile")
+            except Exception:
+                pass
+
             try:
                 import core_separacao_atomos as csa
                 atomos_ = csa.consolidar_atomos(
@@ -318,7 +327,35 @@ def atualizar_separacao(*, reset: bool = False) -> None:
             erro_visivel("2️⃣ Separar", "Erro ao sincronizar com o Olist", exc)
 
 
+# 📥 Sessao vazia (F5 apagou, ou o celular abrindo o que o PC carregou): abre o ULTIMO
+# instantaneo salvo (ate' 12h). A lista de separacao e' recalculada daqui mesmo.
+if st.session_state.dados_separacao is None and not st.session_state.get("_snap_tentado"):
+    st.session_state["_snap_tentado"] = True
+    try:
+        import core_esteira_snapshot as _snap
+        # No PC (Windows) a Fase 1 ja' re-sincroniza sozinha e barato (cache incremental), entao so'
+        # reaproveita um instantaneo FRESCO (10 min). No celular/nuvem abre o de ate' 12h.
+        _u = _snap.carregar_ultimo(max_horas=(10 / 60) if os.name == "nt" else 12.0)
+        if _u:
+            st.session_state.pedidos_brutos = _u["pedidos"]
+            st.session_state.dados_separacao = cs.processar_batch_picking(_u["pedidos"])
+            try:
+                import core_separacao_atomos as _csa
+                st.session_state.atomos_coleta = _csa.consolidar_atomos(
+                    st.session_state.dados_separacao["lista_coleta"])
+            except Exception:
+                st.session_state.atomos_coleta = None
+            st.session_state["snapshot_info"] = {
+                "por": _u["criado_por"], "quando": _snap.hora_brasilia(_u["criado_em"]),
+                "total": _u["total"]}
+    except Exception:
+        pass
+
 dados = st.session_state.dados_separacao
+if st.session_state.get("snapshot_info"):
+    _si = st.session_state["snapshot_info"]
+    st.info(f"📥 Fila aberta do instantâneo salvo pelo **{_si['por']}** às **{_si['quando']}** "
+            f"— {_si['total']} pedido(s). Toque em **Atualizar** para baixar de novo do Olist.")
 
 # ---------------------------------------------------------------------------- #
 # PAINEL DE CRUZAMENTO — visivel em TODAS as fases

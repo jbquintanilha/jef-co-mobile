@@ -272,3 +272,24 @@ dentro da sessão, que é o comportamento certo lá também.
 
 **Medido:** `gerar()` de ~62s → **31,1s** com cache válido. Fase 1 continua
 baixando normal (~52s), mas só uma vez.
+
+### v1.2 — 05/10/2026 · Terminador
+**A fila de separação passa a viver no Supabase (instantâneo): carregar no PC, continuar no celular.**
+
+Pedido do Jota: *"uma base só... eu podia carregar tudo usando o PC e depois continuar no celular...
+a perda é maior ao fazer 2x a mesma coisa, o mesmo download"*.
+
+- **Tabela nova `esteira_fila_snapshot`** (id, criado_em, criado_por, situacoes, total, `dados` jsonb). RLS ligado e
+  **nenhuma política pública**: o instantâneo guarda o pedido BRUTO do Olist (endereço, CPF), então só a chave de
+  serviço entra (no app da nuvem ela vem no mesmo bloco embutido, `SUPABASE_SERVICE_KEY`). Mantém os 5 últimos.
+- **O que se guarda:** só o resultado do download (`pedidos` do `sincronizar`). A lista de separação e os átomos
+  são **recalculados** ao abrir (`processar_batch_picking` é determinístico) — não se grava o derivado.
+- **Quando grava:** no fim de toda sincronização que baixou pedidos (`atualizar_separacao`).
+- **Quando abre:** sessão vazia (F5, ou celular abrindo o que o PC carregou). **Celular/nuvem:** o instantâneo de até
+  12h. **PC (Windows):** só um instantâneo com menos de 10 min — a Fase 1 já re-sincroniza sozinha e barato (cache
+  incremental), e um instantâneo velho faria o PC mostrar fila desatualizada. A tela avisa: *"Fila aberta do
+  instantâneo salvo pelo pc às HH:MM"*; **Atualizar** baixa de novo.
+- **Falha de rede nunca derruba a Esteira:** gravar/ler o instantâneo é "melhor esforço".
+- **Armadilha:** a chave **anônima** da nuvem NÃO enxerga a tabela (de propósito). Quem usar `core_esteira_snapshot`
+  fora do app precisa da chave de serviço, senão lê vazio sem erro.
+- Arquivos: `core_esteira_snapshot.py` (novo), `pages/17_Lista_Separacao.py`. Testes: 7 cenários (AppTest + tabela real).
