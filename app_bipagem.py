@@ -143,10 +143,6 @@ if _aviso:
     st.error(_aviso)
 
 with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_msg_sync"))):
-    continuo = st.toggle(
-        "Leitura contínua (sem tocar a cada etiqueta)", value=True, key="bip_continuo",
-        help="Ligado: a câmera escaneia sozinha. Mais rápido, mas pode ler "
-             "outra etiqueta se a mira passar perto.")
     _fr = _frescor_da_base()
     if _fr:
         st.caption("🗂️ Base compartilhada com a Esteira e o bipador físico:")
@@ -163,7 +159,12 @@ with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_m
         st.session_state.autenticado = False
         st.rerun()
 
-continuo = st.session_state.get("bip_continuo", True)
+# Seletor SEMPRE visivel (pedido do Jota, 05/10): a camera le sozinha (automatica) ou so' quando
+# toca em LER CODIGO (clicando). Automatica pode ler outro codigo da etiqueta que passe pela mira.
+_modo_leitura = st.radio(
+    "Leitura", ["⚡ Automática", "👆 Clicando"], horizontal=True,
+    key="bip_modo_leitura", label_visibility="collapsed")
+continuo = _modo_leitura.startswith("⚡")
 
 # --------------------------------------------------------------------------- #
 # Alarme de divergencia (verificacao dobrada) -- fica na tela ate dar OK
