@@ -39,7 +39,6 @@ import core_bipagem_ui as ui
 import core_scanner_auditoria as auditoria
 import core_scanner_db as db
 import core_scanner_foco as foco
-import core_scanner_populator as populator
 import core_scanner_som as som
 import scanner_camera_ao_vivo as camera_ao_vivo
 
@@ -96,6 +95,38 @@ def _conferidos_hoje_nuvem() -> int:
 
 _hoje = max(int(stats.get("conferidos_hoje", 0) or 0), _conferidos_hoje_nuvem())
 
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _frescor_da_base() -> dict:
+    """Por canal: (quantidade, 'dd/mm HH:MM' da ultima atualizacao em horario de Brasilia).
+
+    A base e' a MESMA da Esteira e do bipador fisico: o PC monta (com o codigo J&T do
+    TikTok vindo do Olist) e espelha no Supabase. Este app so' le.
+    """
+    import datetime as _dt
+    try:
+        import core_scanner_supabase as cloud_db
+        linhas = cloud_db._requisicao_supabase(
+            "GET", "rastreio_pedidos_expedicao",
+            params={"select": "canal,atualizado_em", "order": "atualizado_em.desc",
+                    "limit": "5000"}) or []
+    except Exception:
+        return {}
+    por = {}
+    for r in linhas if isinstance(linhas, list) else []:
+        c = (r.get("canal") or "?").lower()
+        n, ult = por.get(c, (0, None))
+        try:
+            quando = _dt.datetime.fromisoformat(str(r.get("atualizado_em")).replace("Z", "+00:00"))
+        except ValueError:
+            quando = None
+        if quando and (ult is None or quando > ult):
+            ult = quando
+        por[c] = (n + 1, ult)
+    brt = _dt.timezone(_dt.timedelta(hours=-3))
+    return {c: (n, (u.astimezone(brt).strftime("%d/%m %H:%M") if u else "—"))
+            for c, (n, u) in por.items()}
+
 # --------------------------------------------------------------------------- #
 # Topo compacto + ajustes
 # --------------------------------------------------------------------------- #
@@ -104,32 +135,27 @@ ui.render_html(
     f'<small>✅ {st.session_state.scanner_sessao_conferidos} nesta sessão · '
     f'hoje {_hoje}</small></div>')
 
+_aviso = st.session_state.pop("bip_aviso_nuvem", None)
+if _aviso:
+    st.error(_aviso)
+
 with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_msg_sync"))):
     continuo = st.toggle(
         "Leitura contínua (sem tocar a cada etiqueta)", value=False, key="bip_continuo",
         help="Ligado: a câmera escaneia sozinha. Mais rápido, mas pode ler "
              "outra etiqueta se a mira passar perto.")
-    st.caption(f"🗂️ Índice local: {stats.get('total_indice', 0)} rastreios · a nuvem também é consultada a cada leitura")
-    if st.button("🔄 ATUALIZAR BASE (Shopee · ML · TikTok · Amazon)", use_container_width=True):
-        with st.spinner("Buscando pedidos e rastreios nas APIs…"):
-            try:
-                try:
-                    import core_scanner_populator_rapido as populator_rapido
-                    r_sync = populator_rapido.popular_todos_rapido(force=True)
-                except Exception as exc_rapido:
-                    st.warning(f"Modo rápido indisponível ({exc_rapido}) — usando o método antigo.")
-                    r_sync = populator.popular_todos(force=True)
-                st.session_state.scanner_msg_sync = (
-                    f"✅ Base atualizada → Shopee {r_sync.get('shopee', 0)} · "
-                    f"ML {r_sync.get('ml', 0)} · TikTok {r_sync.get('tiktok', 0)}")
-                auditoria.auditar_pendentes_async()
-            except Exception as e:
-                st.session_state.scanner_msg_sync = f"❌ Falha ao atualizar: {e}"
+    _fr = _frescor_da_base()
+    if _fr:
+        st.caption("🗂️ Base compartilhada com a Esteira e o bipador físico:")
+        for _c, (_n, _quando) in sorted(_fr.items()):
+            st.caption(f"• {_c}: {_n} pedidos · atualizada {_quando}")
+    else:
+        st.caption("🗂️ Não consegui ler a base agora.")
+    st.caption("Pedido novo não aparece? Atualize a fila no PC (Esteira → Atualizar fila) "
+               "e toque em Recarregar.")
+    if st.button("🔄 Recarregar", use_container_width=True):
+        st.cache_data.clear()
         st.rerun()
-    if st.session_state.get("scanner_msg_sync"):
-        _m = st.session_state.scanner_msg_sync
-        (st.success if _m.startswith("✅") else st.error)(_m)
-        st.session_state.scanner_msg_sync = ""
     if st.button("🔒 Sair (bloquear)", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
@@ -178,6 +204,8 @@ if tem_leitura:
         if(a){setTimeout(function(){a.scrollIntoView({behavior:'smooth',block:'start'});},120);}}
         catch(e){}})();</script>""", height=0)
 
+_resumo_frescor = " · ".join(f"{c} {q}" for c, (_n, q) in sorted(_frescor_da_base().items())) or "indisponível"
+
 # --------------------------------------------------------------------------- #
 # Resultado
 # --------------------------------------------------------------------------- #
@@ -215,6 +243,7 @@ if res and res.get("encontrado"):
                 db.registrar_conferencia(res.get("tracking", ""), res.get("pedido_ecommerce", ""),
                                          res.get("canal", ""), res.get("sku", ""),
                                          status="cancelado")
+                fluxo.registrar_na_nuvem(res.get("tracking", ""), cancelado=True)
                 st.session_state.scanner_sessao_cancelados += 1
                 fluxo.limpar_leitura()
                 st.rerun()
@@ -275,6 +304,7 @@ if res and res.get("encontrado"):
                         res.get("canal", ""), res.get("sku", ""),
                         sku_validado=(val or {}).get("lido", ""),
                         validacao_nivel=(val or {}).get("nivel", ""))
+                    fluxo.registrar_na_nuvem(res.get("tracking", ""))
                     st.session_state.scanner_sessao_conferidos += 1
                     if val and val.get("ok"):
                         st.session_state.scanner_sessao_validados += 1
@@ -299,15 +329,12 @@ elif res and res.get("codigo_invalido"):
 elif tem_leitura:
     ui.render_html(f'<div class="bip-erro"><div class="t">🔴 PEDIDO NÃO ENCONTRADO</div>'
                    f'<div style="margin:6px 0;">Nenhum pedido casou com <code>{codigo_atual}</code>.</div>'
-                   f'<div style="font-size:13px;">💡 Venda recente? Atualize a base e tente de novo.</div></div>')
+                   f'<div style="font-size:13px;">💡 Venda recente? A base vem da Esteira: atualize a fila no PC e '
+                   f'toque em TENTAR DE NOVO.<br>Base: {_resumo_frescor}</div></div>')
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🔄 ATUALIZAR E TENTAR", type="primary", use_container_width=True):
-            with st.spinner("Buscando vendas novas…"):
-                try:
-                    populator.popular_todos(force=True)
-                except Exception as e:
-                    st.error(f"Falha ao atualizar: {e}")
+        if st.button("🔄 TENTAR DE NOVO", type="primary", use_container_width=True):
+            st.cache_data.clear()
             fluxo.processar_codigo(codigo_atual)
             st.rerun()
     with c2:
