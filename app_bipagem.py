@@ -83,20 +83,33 @@ codigo_atual = st.session_state.scanner_ultimo_codigo
 tem_leitura = bool(codigo_atual)
 stats = db.stats_dia()
 
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _conferidos_hoje_nuvem() -> int:
+    """Conferencias de hoje no Supabase (na nuvem o SQLite local nasce vazio)."""
+    try:
+        import core_scanner_supabase as cloud_db
+        return int((cloud_db.obter_metricas_dia_nuvem() or {}).get("conferidos", 0))
+    except Exception:
+        return 0
+
+
+_hoje = max(int(stats.get("conferidos_hoje", 0) or 0), _conferidos_hoje_nuvem())
+
 # --------------------------------------------------------------------------- #
 # Topo compacto + ajustes
 # --------------------------------------------------------------------------- #
 ui.render_html(
     f'<div class="bip-topo"><span>📦 Bipagem</span>'
     f'<small>✅ {st.session_state.scanner_sessao_conferidos} nesta sessão · '
-    f'hoje {stats.get("conferidos_hoje", 0)}</small></div>')
+    f'hoje {_hoje}</small></div>')
 
 with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_msg_sync"))):
     continuo = st.toggle(
         "Leitura contínua (sem tocar a cada etiqueta)", value=False, key="bip_continuo",
         help="Ligado: a câmera escaneia sozinha. Mais rápido, mas pode ler "
              "outra etiqueta se a mira passar perto.")
-    st.caption(f"🗂️ {stats.get('total_indice', 0)} rastreios na base")
+    st.caption(f"🗂️ Índice local: {stats.get('total_indice', 0)} rastreios · a nuvem também é consultada a cada leitura")
     if st.button("🔄 ATUALIZAR BASE (Shopee · ML · TikTok · Amazon)", use_container_width=True):
         with st.spinner("Buscando pedidos e rastreios nas APIs…"):
             try:

@@ -63,6 +63,11 @@ CSS = """
 /* ---- tela cheia: some o chrome do Streamlit ---- */
 #MainMenu, header[data-testid="stHeader"], footer, [data-testid="stToolbar"],
 [data-testid="stDecoration"], [data-testid="stStatusWidget"] { display: none !important; }
+/* sem menu lateral (e sem a lista de paginas do Streamlit): app dedicado, uma tela so' */
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"],
+[data-testid="stSidebarNav"], [data-testid="stExpandSidebarButton"] { display: none !important; }
+/* a dica "Press Enter to submit form" se sobrepunha ao texto do campo */
+[data-testid="InputInstructions"] { display: none !important; }
 html, body, .stApp, [data-testid="stAppViewContainer"] { background: #0b1220 !important; }
 .block-container { padding: 6px 10px 90px !important; max-width: 560px !important; }
 h1, h2, h3 { margin: 0 !important; }
