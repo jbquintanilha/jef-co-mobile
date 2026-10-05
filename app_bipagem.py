@@ -113,19 +113,22 @@ def _frescor_da_base() -> dict:
     except Exception:
         return {}
     por = {}
+    corte = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=72)
     for r in linhas if isinstance(linhas, list) else []:
         c = (r.get("canal") or "?").lower()
-        n, ult = por.get(c, (0, None))
+        tot, rec, ult = por.get(c, (0, 0, None))
         try:
             quando = _dt.datetime.fromisoformat(str(r.get("atualizado_em")).replace("Z", "+00:00"))
         except ValueError:
             quando = None
         if quando and (ult is None or quando > ult):
             ult = quando
-        por[c] = (n + 1, ult)
+        # "recentes" = atualizados nas ultimas 72h (o que a bancada realmente bipa); o total
+        # e' o HISTORICO inteiro do espelho (desde 27/08) e enganava como "centenas de etiquetas".
+        por[c] = (tot + 1, rec + (1 if quando and quando >= corte else 0), ult)
     brt = _dt.timezone(_dt.timedelta(hours=-3))
-    return {c: (n, (u.astimezone(brt).strftime("%d/%m %H:%M") if u else "—"))
-            for c, (n, u) in por.items()}
+    return {c: ((rec, tot), (u.astimezone(brt).strftime("%d/%m %H:%M") if u else "—"))
+            for c, (tot, rec, u) in por.items()}
 
 # --------------------------------------------------------------------------- #
 # Topo compacto + ajustes
@@ -147,8 +150,8 @@ with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_m
     _fr = _frescor_da_base()
     if _fr:
         st.caption("🗂️ Base compartilhada com a Esteira e o bipador físico:")
-        for _c, (_n, _quando) in sorted(_fr.items()):
-            st.caption(f"• {_c}: {_n} pedidos · atualizada {_quando}")
+        for _c, ((_rec, _tot), _quando) in sorted(_fr.items()):
+            st.caption(f"• {_c}: **{_rec} recentes** (72h) · {_tot} no histórico · atualizada {_quando}")
     else:
         st.caption("🗂️ Não consegui ler a base agora.")
     st.caption("Pedido novo não aparece? Atualize a fila no PC (Esteira → Atualizar fila) "
