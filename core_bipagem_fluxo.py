@@ -114,6 +114,34 @@ def registrar_na_nuvem(tracking: str, *, cancelado: bool = False) -> bool:
     return ok
 
 
+def sugestoes_na_base(codigo: str, limite: int = 4) -> list[dict]:
+    """Pedidos PARECIDOS com um codigo nao encontrado (leitura com 1 digito errado).
+
+    Procura na base compartilhada pelo COMECO e pelo FIM do codigo lido (8 caracteres) em
+    rastreio, shipment e numero do pedido. A pagina Scanner antiga tinha a busca por parte
+    do codigo; o app dedicado nao -- uma leitura ruim virava beco sem saida.
+    """
+    import re
+    c = re.sub(r"[^A-Za-z0-9]", "", str(codigo or "")).upper()
+    if len(c) < 5:
+        return []
+    pedacos = {c} if len(c) < 9 else {c[:8], c[-8:]}
+    achados: dict[str, dict] = {}
+    try:
+        import core_scanner_supabase as cloud_db
+        for p in pedacos:
+            r = cloud_db._requisicao_supabase(
+                "GET", "rastreio_pedidos_expedicao",
+                params={"or": f"(tracking.ilike.*{p}*,shipment_id.ilike.*{p}*,pedido_ecommerce.ilike.*{p}*)",
+                        "select": "tracking,canal,sku_principal,produto_nome", "limit": str(limite)})
+            for x in (r if isinstance(r, list) else []):
+                if x.get("tracking"):
+                    achados.setdefault(x["tracking"], x)
+    except Exception:
+        return []
+    return list(achados.values())[:limite]
+
+
 def validar_produto(codigo_peca: str) -> None:
     """Cruza a etiqueta de produto bipada com o SKU do pedido em tela."""
     res_atual = st.session_state.scanner_resultado or {}

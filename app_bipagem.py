@@ -345,6 +345,15 @@ elif tem_leitura:
         if st.button("📷 LER OUTRO", use_container_width=True):
             fluxo.limpar_leitura()
             st.rerun()
+    # Leitura com 1 digito errado e' o caso comum: oferece o que ha' de PARECIDO na base.
+    _sug = fluxo.sugestoes_na_base(codigo_atual)
+    if _sug:
+        st.caption("🔎 Parecido na base — toque para abrir:")
+        for _s in _sug:
+            _rot = f"{_s['tracking']} · {_s.get('canal') or '?'} · {(_s.get('produto_nome') or _s.get('sku_principal') or '')[:28]}"
+            if st.button(_rot, key=f"sug_{_s['tracking']}", use_container_width=True):
+                fluxo.processar_codigo(_s["tracking"])
+                st.rerun()
 
 else:
     ui.render_html('<div class="bip-aguardando">Aguardando leitura… aponte a câmera para a etiqueta.</div>')
