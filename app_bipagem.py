@@ -144,7 +144,7 @@ if _aviso:
 
 with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_msg_sync"))):
     continuo = st.toggle(
-        "Leitura contínua (sem tocar a cada etiqueta)", value=False, key="bip_continuo",
+        "Leitura contínua (sem tocar a cada etiqueta)", value=True, key="bip_continuo",
         help="Ligado: a câmera escaneia sozinha. Mais rápido, mas pode ler "
              "outra etiqueta se a mira passar perto.")
     _fr = _frescor_da_base()
@@ -163,7 +163,7 @@ with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_m
         st.session_state.autenticado = False
         st.rerun()
 
-continuo = st.session_state.get("bip_continuo", False)
+continuo = st.session_state.get("bip_continuo", True)
 
 # --------------------------------------------------------------------------- #
 # Alarme de divergencia (verificacao dobrada) -- fica na tela ate dar OK
@@ -228,7 +228,7 @@ if res and res.get("encontrado"):
             if info is None:
                 st.caption("🔄 Verificando cancelamento na plataforma…")
                 return
-            fluxo.processar_codigo(st.session_state.scanner_ultimo_codigo)
+            fluxo.processar_codigo(st.session_state.scanner_ultimo_codigo, forcar=True)
             st.rerun()
 
         _aguardar_status()
@@ -339,7 +339,7 @@ elif tem_leitura:
     with c1:
         if st.button("🔄 TENTAR DE NOVO", type="primary", use_container_width=True):
             st.cache_data.clear()
-            fluxo.processar_codigo(codigo_atual)
+            fluxo.processar_codigo(codigo_atual, forcar=True)
             st.rerun()
     with c2:
         if st.button("📷 LER OUTRO", use_container_width=True):

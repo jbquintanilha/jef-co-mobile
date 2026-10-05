@@ -69,6 +69,8 @@ CSS = """
 /* CONFERIDO em verde: o vermelho padrao do Streamlit parecia botao de perigo */
 .st-key-rodape_conferir [data-testid="stBaseButton-primary"] { background:#16a34a !important; border-color:#16a34a !important; color:#ffffff !important; }
 .st-key-rodape_conferir [data-testid="stBaseButton-primary"]:hover { background:#15803d !important; border-color:#15803d !important; }
+/* o titulo dos expanders (Ajustes, Confirmar a peca) estava escuro sobre escuro */
+[data-testid="stExpander"] summary, [data-testid="stExpander"] summary * { color: #e2e8f0 !important; }
 /* a dica "Press Enter to submit form" se sobrepunha ao texto do campo */
 [data-testid="InputInstructions"] { display: none !important; }
 html, body, .stApp, [data-testid="stAppViewContainer"] { background: #0b1220 !important; }

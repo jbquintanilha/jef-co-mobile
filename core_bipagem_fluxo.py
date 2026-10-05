@@ -53,7 +53,7 @@ def limpar_leitura() -> None:
     st.session_state.scanner_validacao = None
 
 
-def processar_codigo(codigo: str) -> None:
+def processar_codigo(codigo: str, forcar: bool = False) -> None:
     """Resolve o codigo lido e deixa a ficha pronta.
 
     Sanitiza antes de resolver: a pistola le tudo que estiver no campo de visao
@@ -74,8 +74,22 @@ def processar_codigo(codigo: str) -> None:
         }
         st.session_state.scanner_som = som.ERRO
         return
+    # Leitura continua: a camera relê a MESMA etiqueta enquanto ela esta' na mira. Mesmo codigo
+    # com a ficha ja' na tela = ignora (senao o bip repetia e a ficha piscava). Os fluxos que
+    # querem reprocessar de proposito (status de cancelamento, TENTAR DE NOVO) passam forcar=True.
+    _ja = st.session_state.get("scanner_resultado") or {}
+    if (not forcar and limpo == st.session_state.get("scanner_ultimo_codigo")
+            and _ja.get("encontrado")):
+        return
     st.session_state.scanner_ultimo_codigo = limpo
-    st.session_state.scanner_resultado = resolver.resolver_codigo(limpo)
+    res_ = resolver.resolver_codigo(limpo)
+    if not (res_ or {}).get("encontrado"):
+        # Falha MOMENTANEA da nuvem/Olist (timeout, 429) parece "pedido nao encontrado" e a
+        # etiqueta fica sem saida. Uma 2a tentativa curta resolve a maioria.
+        import time as _t
+        _t.sleep(0.8)
+        res_ = resolver.resolver_codigo(limpo)
+    st.session_state.scanner_resultado = res_
 
     # Som marcado AQUI (na leitura nova), nao no render: o Streamlit re-executa a
     # pagina inteira a cada interacao e tocar no render repetiria o bip.
