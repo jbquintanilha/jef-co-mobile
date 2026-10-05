@@ -737,10 +737,106 @@ def _indice_video(tracking: str) -> tuple[str, int | None, str]:
         return "", None, ""
 
 
+# --------------------------------------------------------------------------- #
+# Conferencias na base COMPARTILHADA (Supabase) -- 04/10/2026
+#
+# Antes a conferencia ficava SO' neste SQLite. No app da nuvem esse disco some quando
+# o app reinicia e o PC nunca via o que o celular conferiu (conferencias_expedicao
+# tinha 0 linhas). Agora toda conferencia vai tambem para o Supabase -- a mesma base
+# do PC, da Esteira e do app de bipagem. O SQLite segue como cache/log local.
+# --------------------------------------------------------------------------- #
+def _espelhar_conferencia_na_nuvem(tracking: str, status: str = "conferido",
+                                   conferido_por: str = "pc") -> bool:
+    """Grava a conferencia no Supabase. NUNCA derruba a bipagem: falha vira aviso no log.
+
+    Timeout curto (4s): com o PC sem internet a bipagem nao pode travar esperando a nuvem.
+    `sincronizar_conferencias_nuvem()` repoe depois o que ficou so' local.
+    """
+    try:
+        import datetime as _dt
+        import requests
+        import core_scanner_supabase as nuvem
+        if not (nuvem.SUPABASE_URL and nuvem.SUPABASE_KEY):
+            return False
+        h = dict(nuvem._headers())
+        h["Prefer"] = "resolution=merge-duplicates,return=minimal"
+        r = requests.post(
+            f"{nuvem.SUPABASE_URL}/rest/v1/conferencias_expedicao?on_conflict=tracking,data_conferencia",
+            headers=h, timeout=4,
+            json={"tracking": tracking, "data_conferencia": _dt.date.today().isoformat(),
+                  "conferido_em": _dt.datetime.now().isoformat(),
+                  "conferido_por": conferido_por,
+                  "status": "CANCELADO" if str(status).lower() == "cancelado" else "CONFERIDO"})
+        if r.status_code in (200, 201, 204):
+            return True
+        log.warning("Conferencia %s nao gravou na nuvem: HTTP %s", tracking, r.status_code)
+    except Exception as e:
+        log.warning("Conferencia %s nao gravou na nuvem: %s", tracking, e)
+    return False
+
+
+def _conferido_hoje_na_nuvem(tracking: str) -> bool:
+    """True se o Supabase ja' tem esse rastreio conferido HOJE (PC ou celular)."""
+    try:
+        import datetime as _dt
+        import requests
+        import core_scanner_supabase as nuvem
+        if not (nuvem.SUPABASE_URL and nuvem.SUPABASE_KEY):
+            return False
+        r = requests.get(
+            f"{nuvem.SUPABASE_URL}/rest/v1/conferencias_expedicao", headers=nuvem._headers(),
+            params={"tracking": f"eq.{tracking}",
+                    "data_conferencia": f"eq.{_dt.date.today().isoformat()}",
+                    "select": "id", "limit": "1"}, timeout=3)
+        return r.status_code == 200 and bool(r.json())
+    except Exception:
+        return False
+
+
+def sincronizar_conferencias_nuvem(*, dias: int | None = 30, simular: bool = True) -> dict:
+    """Repoe no Supabase as conferencias que existem so' neste SQLite (backfill/retentativa).
+
+    Idempotente (chave unica tracking+dia, merge-duplicates). `simular=True` (padrao) so'
+    CONTA o que subiria -- escrever em lote na base real exige confirmacao do Comandante.
+    """
+    import datetime as _dt
+    import requests
+    import core_scanner_supabase as nuvem
+    filtro = "" if dias is None else f"WHERE date(conferido_em) >= date('now','localtime','-{int(dias)} days')"
+    with _get_conn() as conn:
+        linhas = conn.execute(
+            f"SELECT tracking, date(conferido_em), conferido_em, COALESCE(status,'conferido') "
+            f"FROM conferencias {filtro}").fetchall()
+    payload, vistos = [], set()
+    for trk, dia, quando, st in linhas:
+        if (trk, dia) in vistos:
+            continue
+        vistos.add((trk, dia))
+        payload.append({"tracking": trk, "data_conferencia": dia, "conferido_em": quando,
+                        "conferido_por": "pc-historico",
+                        "status": "CANCELADO" if str(st).lower() == "cancelado" else "CONFERIDO"})
+    res = {"locais": len(linhas), "a_enviar": len(payload), "enviados": 0, "falhas": 0, "simulado": simular}
+    if simular or not payload:
+        return res
+    h = dict(nuvem._headers())
+    h["Prefer"] = "resolution=merge-duplicates,return=minimal"
+    url = f"{nuvem.SUPABASE_URL}/rest/v1/conferencias_expedicao?on_conflict=tracking,data_conferencia"
+    for i in range(0, len(payload), 100):
+        lote = payload[i:i + 100]
+        r = requests.post(url, headers=h, json=lote, timeout=30)
+        if r.status_code in (200, 201, 204):
+            res["enviados"] += len(lote)
+        else:
+            res["falhas"] += len(lote)
+            log.error("Backfill de conferencias: HTTP %s %s", r.status_code, r.text[:120])
+    return res
+
+
 def registrar_conferencia(tracking: str, pedido_ecommerce: str = "",
                           canal: str = "", sku_principal: str = "",
                           status: str = "conferido", sku_validado: str = "",
-                          validacao_nivel: str = "") -> bool:
+                          validacao_nivel: str = "",
+                          espelhar_nuvem: bool = True) -> bool:
     """Registra uma bipagem no log do dia. Evita duplicata por tracking/dia.
 
     ``status`` registra o tipo de conferencia: ``conferido`` (normal) ou
@@ -783,6 +879,8 @@ def registrar_conferencia(tracking: str, pedido_ecommerce: str = "",
                  sku_validado or "", validacao_nivel or "",
                  video_arquivo or None, video_segundo, print_arquivo or None),
             )
+        if espelhar_nuvem:
+            _espelhar_conferencia_na_nuvem(t, status or "conferido")
         return True
     except sqlite3.Error as e:
         log.error("Erro ao registrar conferencia %s: %s", t, e)
@@ -804,9 +902,12 @@ def ja_conferido_hoje(tracking: str) -> bool:
                 """,
                 (t,),
             ).fetchone()
-        return row is not None
+        if row is not None:
+            return True
     except sqlite3.Error:
-        return False
+        pass
+    # Nao achou aqui: o celular (ou outro PC) pode ter conferido -- a base e' uma so'.
+    return _conferido_hoje_na_nuvem(t)
 
 
 def contar_conferidos_hoje() -> int:

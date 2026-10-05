@@ -80,8 +80,6 @@ def processar_codigo(codigo: str) -> None:
     # Som marcado AQUI (na leitura nova), nao no render: o Streamlit re-executa a
     # pagina inteira a cada interacao e tocar no render repetiria o bip.
     _r = st.session_state.scanner_resultado or {}
-    if _r.get("encontrado") and not _r.get("conferido_hoje") and ja_conferido_na_nuvem(_r.get("tracking", "")):
-        _r["conferido_hoje"] = True
     if not _r.get("encontrado"):
         st.session_state.scanner_som = som.ERRO
     elif len(db.desserializar_itens(_r)) > 1:
@@ -114,23 +112,6 @@ def registrar_na_nuvem(tracking: str, *, cancelado: bool = False) -> bool:
             f"⚠️ A conferência de {tracking} NÃO foi gravada na nuvem. "
             "Confira a conexão e bipe de novo se precisar.")
     return ok
-
-
-def ja_conferido_na_nuvem(tracking: str) -> bool:
-    """True se este rastreio ja' foi conferido HOJE no Supabase (PC ou celular)."""
-    if not tracking:
-        return False
-    try:
-        import datetime as _dt
-        import core_scanner_supabase as cloud_db
-        r = cloud_db._requisicao_supabase(
-            "GET", "conferencias_expedicao",
-            params={"tracking": f"eq.{tracking.strip().upper()}",
-                    "data_conferencia": f"eq.{_dt.date.today().isoformat()}",
-                    "select": "id", "limit": "1"})
-        return bool(r) and isinstance(r, list)
-    except Exception:
-        return False
 
 
 def validar_produto(codigo_peca: str) -> None:

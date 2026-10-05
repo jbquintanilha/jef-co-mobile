@@ -165,7 +165,9 @@ def registrar_conferencia_nuvem(tracking: str, conferido_por: str = "mobile") ->
 
     headers = _headers()
     headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
-    url = f"{SUPABASE_URL}/rest/v1/conferencias_expedicao"
+    # on_conflict e' OBRIGATORIO: a tabela tem chave unica (tracking, data_conferencia) e,
+    # sem ele, a 2a conferencia do mesmo dia volta 409 e a funcao diz "falhou".
+    url = f"{SUPABASE_URL}/rest/v1/conferencias_expedicao?on_conflict=tracking,data_conferencia"
 
     for _, delay in enumerate(RETRY_DELAYS):
         try:

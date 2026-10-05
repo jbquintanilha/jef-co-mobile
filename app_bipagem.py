@@ -242,7 +242,7 @@ if res and res.get("encontrado"):
             if st.button("⚠️ CONFERIDO (CANCELADO)", use_container_width=True, type="primary"):
                 db.registrar_conferencia(res.get("tracking", ""), res.get("pedido_ecommerce", ""),
                                          res.get("canal", ""), res.get("sku", ""),
-                                         status="cancelado")
+                                         status="cancelado", espelhar_nuvem=False)
                 fluxo.registrar_na_nuvem(res.get("tracking", ""), cancelado=True)
                 st.session_state.scanner_sessao_cancelados += 1
                 fluxo.limpar_leitura()
@@ -303,7 +303,8 @@ if res and res.get("encontrado"):
                         res.get("tracking", ""), res.get("pedido_ecommerce", ""),
                         res.get("canal", ""), res.get("sku", ""),
                         sku_validado=(val or {}).get("lido", ""),
-                        validacao_nivel=(val or {}).get("nivel", ""))
+                        validacao_nivel=(val or {}).get("nivel", ""),
+                        espelhar_nuvem=False)
                     fluxo.registrar_na_nuvem(res.get("tracking", ""))
                     st.session_state.scanner_sessao_conferidos += 1
                     if val and val.get("ok"):
