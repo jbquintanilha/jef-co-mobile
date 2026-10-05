@@ -200,6 +200,61 @@ def encurtar_para_caber(nome: str, x_inicio: float, largura_pagina: float,
     return None
 
 
+def _fim_do_bloco(pagina, caixa, tol_x: float = 12.0, gap_max: float = 6.0) -> float:
+    """Onde o bloco do DESTINATARIO (nome + endereco) termina.
+
+    🔴 Corrigido em 05/10/2026 (pedido 1158, TikTok/J&T): antes valia "a ultima linha
+    alinhada a mesma margem esquerda" -- e o bloco do REMETENTE tem a MESMA margem, entao
+    o destinatario "terminava" no fim do remetente e o nome civil era escrito la' embaixo,
+    por cima do codigo de barras. Agora so' conta texto CONTIGUO abaixo do nome: o 1o salto
+    vertical maior que `gap_max` (o remetente comeca ~40pt depois) encerra o bloco.
+    """
+    spans = []
+    for bloco in pagina.get_text("dict")["blocks"]:
+        for linha in bloco.get("lines", []):
+            for trecho in linha.get("spans", []):
+                bx0, by0, _, by1 = trecho["bbox"]
+                if abs(bx0 - caixa.x0) < tol_x and by0 >= caixa.y0 - 0.5:
+                    spans.append((by0, by1))
+    fim = caixa.y1
+    for by0, by1 in sorted(spans):
+        if by0 - fim > gap_max:
+            break
+        fim = max(fim, by1)
+    return fim
+
+
+def _regua_horizontal_abaixo(pagina, caixa, minimo: float = 40.0):
+    """y da 1a linha horizontal DESENHADA abaixo do nome que cobre a coluna dele
+    (a divisoria/borda inferior da caixa do destinatario). None se nao houver."""
+    melhor = None
+    try:
+        desenhos = pagina.get_drawings()
+    except Exception:
+        return None
+    for dr in desenhos:
+        r = dr["rect"]
+        if (r.height <= 1.5 and r.width >= minimo and r.y0 > caixa.y1 - 0.5
+                and r.x0 <= caixa.x0 + 2 and r.x1 >= caixa.x0 + minimo):
+            melhor = r.y0 if melhor is None else min(melhor, r.y0)
+    return melhor
+
+
+def _regua_vertical_a_direita(pagina, y0: float, y1: float, x_apos: float):
+    """x da 1a linha vertical DESENHADA a direita de `x_apos` que cruza a faixa y0..y1
+    (a borda da coluna do codigo de barras na J&T). Texto nao enxerga isso."""
+    melhor = None
+    try:
+        desenhos = pagina.get_drawings()
+    except Exception:
+        return None
+    for dr in desenhos:
+        r = dr["rect"]
+        if r.width <= 1.5 and r.height >= 15 and r.x0 > x_apos and r.y0 < y1 and r.y1 > y0:
+            melhor = r.x0 if melhor is None else min(melhor, r.x0)
+    return melhor
+
+
 def _limite_direito_real(pagina, y0: float, y1: float,
                           x_ignorar_ate: float) -> float:
     """Onde a linha (y0..y1) PODE de fato escrever ate', sem invadir outro
@@ -225,6 +280,11 @@ def _limite_direito_real(pagina, y0: float, y1: float,
                 sobrepoe_y = by0 < y1 and by1 > y0
                 if sobrepoe_y and bx0 < limite:
                     limite = bx0
+    # A borda da coluna do codigo de barras e' DESENHO, nao texto: sem isto o nome
+    # "cabia" no calculo e cruzava a linha da caixa (visto 05/10/2026).
+    v = _regua_vertical_a_direita(pagina, y0, y1, x_ignorar_ate)
+    if v is not None:
+        limite = min(limite, v - 2.0)
     return limite
 
 
@@ -246,15 +306,7 @@ def _linha_livre_abaixo(pagina, caixa_nome,
 
     # Ultima linha do MESMO bloco de destinatario (endereco costuma vir
     # logo abaixo do nome, alinhado a` mesma margem esquerda).
-    fim_bloco = caixa_nome.y1
-    for bloco in pagina.get_text("dict")["blocks"]:
-        for linha in bloco.get("lines", []):
-            for trecho in linha.get("spans", []):
-                bx0, by0, bx1, by1 = trecho["bbox"]
-                mesma_coluna = abs(bx0 - x_esq) < 3
-                logo_abaixo = by0 >= y_topo_bloco
-                if mesma_coluna and logo_abaixo:
-                    fim_bloco = max(fim_bloco, by1)
+    fim_bloco = _fim_do_bloco(pagina, caixa_nome, tol_x=3.0)
 
     # Proximo elemento QUALQUER (mesma pagina) abaixo do fim do bloco —
     # define ate' onde ha' espaco vertical livre antes de colidir.
@@ -270,6 +322,11 @@ def _linha_livre_abaixo(pagina, caixa_nome,
                         limite_h = pagina.rect.width
                     if by0 < proximo_y + 2 and bx0 < limite_h:
                         limite_h = min(limite_h, pagina.rect.width)
+
+    # A linha da caixa do destinatario e' o teto: nunca escrever alem dela.
+    teto = _regua_horizontal_abaixo(pagina, caixa_nome)
+    if teto is not None:
+        proximo_y = min(proximo_y, teto)
 
     linha_altura = 9.0  # aproximacao pro tamanho de fonte tipico (8-8.3pt)
     if (proximo_y - fim_bloco) < (linha_altura + folga_min):

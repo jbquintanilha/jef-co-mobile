@@ -293,3 +293,27 @@ a perda é maior ao fazer 2x a mesma coisa, o mesmo download"*.
 - **Armadilha:** a chave **anônima** da nuvem NÃO enxerga a tabela (de propósito). Quem usar `core_esteira_snapshot`
   fora do app precisa da chave de serviço, senão lê vazio sem erro.
 - Arquivos: `core_esteira_snapshot.py` (novo), `pages/17_Lista_Separacao.py`. Testes: 7 cenários (AppTest + tabela real).
+
+### v1.3 — 05/10/2026 · Terminador
+**Nome civil na etiqueta do TikTok (J&T) saía em cima do código de barras — corrigido.**
+
+Achado pelo Jota no pedido **1158** (`etiquetas_esteira_20261004_2242.pdf`, p.19): "(Washington Cardoso)" apareceu
+sobre o código de barras do meio da etiqueta. Varredura de 45 etiquetas TikTok de 9 PDFs (28/09 a 04/10): só essa.
+
+**Causa (a mesma nos 2 caminhos de "2ª linha": `_lacuna_limpa` na pilha e `_linha_livre_abaixo` no módulo do nome):**
+quando o nome não cabe ao lado do apelido, o código procura a lacuna abaixo do endereço. O "fim do bloco do
+destinatário" era medido como *"a última linha alinhada à mesma margem esquerda"* — e o bloco do **REMETENTE** tem a
+MESMA margem. Resultado: o destinatário "terminava" no fim do remetente (y≈233) e o nome era escrito a ~270pt, logo
+acima do número do código de barras de baixo. Agravante: o limite à direita só olhava TEXTO; a borda da coluna do
+código de barras é um DESENHO (linha vertical), então o nome "cabia" no cálculo e cruzava a linha da caixa.
+
+**Correção** (`core_etiqueta_nome_real.py` + `core_etiquetas_na_esteira.py`):
+- `_fim_do_bloco()`: só conta texto CONTÍGUO abaixo do nome (salto vertical > 6pt encerra o bloco; o remetente
+  começa ~40pt depois).
+- `_regua_horizontal_abaixo()`: a linha que fecha a caixa do destinatário é o TETO — nunca escrever além dela
+  (4pt de folga, para não encostar).
+- `_regua_vertical_a_direita()`: a borda da coluna do código de barras entra no limite à direita.
+- Efeito no 1158: o nome passa a ficar dentro da caixa, abaixo do endereço e acima da linha; longe do código de barras.
+- Testes: etiqueta real do 1158 + 12 casos com outras etiquetas TikTok (nome longo e curto): 0 fora da caixa.
+- **Regra para o futuro:** geometria de etiqueta se mede com TEXTO **e** DESENHOS (`page.get_drawings()`); alinhamento
+  de margem não identifica bloco (destinatário e remetente compartilham a esquerda).

@@ -314,13 +314,8 @@ def _lacuna_limpa(pagina, caixa_nome, altura_min: float = 9.0):
 
     # Onde o bloco do destinatario (nome + endereco) termina: ultima linha
     # alinhada a` mesma margem esquerda.
-    fim_bloco = caixa_nome.y1
-    for bloco in pagina.get_text("dict")["blocks"]:
-        for linha in bloco.get("lines", []):
-            for trecho in linha.get("spans", []):
-                bx0, by0, _, by1 = trecho["bbox"]
-                if abs(bx0 - x_esq) < 12 and by0 >= caixa_nome.y0:
-                    fim_bloco = max(fim_bloco, by1)
+    import core_etiqueta_nome_real as _cnr
+    fim_bloco = _cnr._fim_do_bloco(pagina, caixa_nome, tol_x=12.0)
 
     # Primeiro elemento QUALQUER abaixo disso -- e' o teto da lacuna.
     proximo_y = pagina.rect.height
@@ -331,12 +326,19 @@ def _lacuna_limpa(pagina, caixa_nome, altura_min: float = 9.0):
                 if by0 > fim_bloco + 0.5:
                     proximo_y = min(proximo_y, by0)
 
+    # A linha horizontal que fecha a caixa do destinatario e' o teto da lacuna.
+    teto = _cnr._regua_horizontal_abaixo(pagina, caixa_nome)
+    por_regua = teto is not None and teto <= proximo_y
+    if teto is not None:
+        proximo_y = min(proximo_y, teto)
+
     if (proximo_y - fim_bloco) < altura_min:
         return None
 
     # Base do texto 2pt acima do proximo elemento: "pouco acima da margem
     # inferior dessa caixa", como pedido.
-    y_base = proximo_y - 2.0
+    # Encostar na linha da caixa parece erro de impressao: 4pt de folga quando o teto e' ela.
+    y_base = proximo_y - (4.0 if por_regua else 2.0)
 
     # Limite horizontal: qualquer conteudo a` direita nessa mesma faixa
     # (a coluna do codigo de barras vertical, por exemplo).
@@ -347,6 +349,10 @@ def _lacuna_limpa(pagina, caixa_nome, altura_min: float = 9.0):
                 bx0, by0, _, by1 = trecho["bbox"]
                 if bx0 > x_esq + 20 and by0 < y_base + 2 and by1 > y_base - 9:
                     limite = min(limite, bx0 - 3)
+    # ...e a borda DESENHADA da coluna do codigo de barras (texto nao enxerga).
+    v = _cnr._regua_vertical_a_direita(pagina, y_base - 9, y_base + 2, x_esq)
+    if v is not None:
+        limite = min(limite, v - 3.0)
     return y_base, limite
 
     return escritos
