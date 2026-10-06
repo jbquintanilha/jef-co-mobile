@@ -317,3 +317,25 @@ código de barras é um DESENHO (linha vertical), então o nome "cabia" no cálc
 - Testes: etiqueta real do 1158 + 12 casos com outras etiquetas TikTok (nome longo e curto): 0 fora da caixa.
 - **Regra para o futuro:** geometria de etiqueta se mede com TEXTO **e** DESENHOS (`page.get_drawings()`); alinhamento
   de margem não identifica bloco (destinatário e remetente compartilham a esquerda).
+
+### v1.4 — 06/10/2026 · Terminador
+**"Gerar pilha numerada" mais rápido, PDF idêntico.** Marco de retorno: tag `esteira-pre-velocidade-20261005`
+(+ branch `backup/esteira-pre-velocidade`); nos repos remotos, tag `esteira-pre-velocidade-origin` / `-app`.
+
+Medido (`gerar()` com cache, mesmo input, antigo × novo): **onda (cache) 32,3 s → 5,2 s**; fila livre
+~40–55 s → ~31–35 s (o resto é o download das etiquetas nos marketplaces, que a fila livre refaz DE PROPÓSITO).
+PDFs conferidos página a página (texto + pixels a 100 dpi): **idênticos** (8/8, 4 rodadas).
+
+Causas e correções:
+- **Nome civil do Olist (era ~4–37 s):** `cnr.mapa_por_pedido_olist([4,7])` refazia `GET /pedidos` logo após a rajada
+  do sync e batia no 429 do Olist (`core_olist.request` dorme 15 s por tentativa). Agora o mapa vem da MESMA fila já
+  baixada para sequenciar (`_sequencia_completa()`, 4º item). Conferido: 7/7 nomes iguais. O texto-reserva "Cliente"
+  de `processar_batch_picking` é descartado (não é nome civil). Rede de segurança: só vai à API se a fila bateu o teto
+  de 100 pedidos e faltar nome. `mapa_por_pedido_olist` permanece intacta.
+- **TikTok pacote→pedido (era ~19 s ×2 no caminho de onda):** a API pagina ~360 pacotes para traduzir 2. A relação é
+  imutável → cache em `%TEMP%/jf_tiktok_pacote_pedido.json` (gravação atômica; falha de disco nunca derruba o lote).
+  Pacote desconhecido continua indo à API; a 1ª chamada reaproveita na 2ª (`_mapa_tt_cache`).
+- **Índice de NF-e (~1,7 s):** `core_nome_civil_nfe.indexar()` memoizado por assinatura (nome+mtime+tamanho dos XMLs).
+- **Instrumentação:** `gerar()` devolve `tempos` por etapa e loga `Gerar pilha: Xs | etapas: {...}`.
+- **Não alterado de propósito:** blindagem térmica (406 dpi/1-bit), download de etiquetas, ordem/numeração.
+- **Possível próximo passo (não feito, ganho ~4 s):** a página 17 passar a fila já carregada ao `gerar()` e pular o 2º sync.

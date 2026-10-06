@@ -49,6 +49,7 @@ Uso:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -175,11 +176,20 @@ def _mapa_tiktok(pacotes_presentes: set[str] | None = None) -> dict[str, str]:
             isso a varredura completa custava ~16s para traduzir 3 pacotes
             (regressao medida 24/09, depois de tirar o filtro).
     """
+    # ⚡ pacote -> pedido NUNCA muda depois de criado. Paginar a API do TikTok
+    # (~360 pacotes) so' para traduzir 2 custava ~19s (medido 05/10/2026).
+    # Guarda o que ja' foi traduzido e so' vai a API para pacote desconhecido.
+    conhecido = _ler_cache_pacotes_tt()
+    if pacotes_presentes:
+        _alvo = {str(p) for p in pacotes_presentes}
+        if _alvo <= set(conhecido):
+            return {p: conhecido[p] for p in _alvo}
+
     try:
         import core_etiquetas_tiktok_api as tt
     except Exception as exc:
         log.warning("Mapa TikTok indisponivel: %s", exc)
-        return {}
+        return {p: conhecido[p] for p in (pacotes_presentes or ()) if p in conhecido}
 
     mapa: dict[str, str] = {}
     try:
@@ -195,11 +205,48 @@ def _mapa_tiktok(pacotes_presentes: set[str] | None = None) -> dict[str, str]:
     except Exception as exc:
         log.warning("Falha ao mapear pacotes TikTok: %s", exc)
 
+    if mapa:
+        _gravar_cache_pacotes_tt({**conhecido, **mapa})
+    # O que a API nao trouxe agora, o cache ainda sabe.
+    for p in (pacotes_presentes or ()):
+        if p not in mapa and p in conhecido:
+            mapa[p] = conhecido[p]
     return mapa
 
 
-def _sequencia_e_mapa_olist() -> tuple[list[str], dict[str, str], dict[str, str]]:
-    """(ordem_da_esteira, {numero_ecommerce: numero_olist}, {numero_ecommerce: sku_formatado})."""
+def _arquivo_cache_pacotes_tt() -> Path:
+    import tempfile
+    return Path(tempfile.gettempdir()) / "jf_tiktok_pacote_pedido.json"
+
+
+def _ler_cache_pacotes_tt() -> dict[str, str]:
+    try:
+        dados = json.loads(_arquivo_cache_pacotes_tt().read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in dados.items() if k and v}
+    except Exception:
+        return {}
+
+
+def _gravar_cache_pacotes_tt(mapa: dict[str, str]) -> None:
+    try:
+        destino = _arquivo_cache_pacotes_tt()
+        tmp = destino.with_suffix(".tmp")
+        tmp.write_text(json.dumps(mapa), encoding="utf-8")
+        tmp.replace(destino)       # troca atomica: leitor nunca ve arquivo pela metade
+    except Exception as exc:       # cache e' so' aceleracao -- nunca derruba o lote
+        log.warning("Nao gravou cache pacote->pedido TikTok: %s", exc)
+
+
+def _sequencia_completa() -> tuple[list[str], dict[str, str], dict[str, str],
+                                   dict[str, tuple[str, str]]]:
+    """(ordem, {ecom: numero_olist}, {ecom: sku_formatado}, {ecom: (civil, civil)}).
+
+    ⚡ O 4o item e' o mapa de nome civil do Olist, tirado da MESMA fila que ja'
+    foi baixada para sequenciar. Antes o `gerar()` refazia `GET /pedidos` so'
+    para isso (`cnr.mapa_por_pedido_olist`) e, logo depois da rajada do sync,
+    batia no 429 do Olist (+15s por tentativa; medido 37,6s em 05/10/2026).
+    Conferido em 05/10: os 7 nomes saem identicos aos da listagem.
+    """
     import core_separacao as cs
     import core_sequencia_embalagem as seq
     import core_sync_expedicao as sync
@@ -207,6 +254,15 @@ def _sequencia_e_mapa_olist() -> tuple[list[str], dict[str, str], dict[str, str]
     dados = sync.sincronizar([4, 7], max_pedidos=100)
     processado = cs.processar_batch_picking(dados["pedidos"])
     resultado = seq.sequenciar(processado)
+
+    mapa_civil: dict[str, tuple[str, str]] = {}
+    for p in resultado["sequencia"]:
+        ecom = str(p.get("numero_ecommerce") or "").strip()
+        civil = str(p.get("cliente") or "").strip()
+        # "Cliente" e' o texto-reserva de `processar_batch_picking` quando o
+        # pedido veio sem nome -- nao e' nome civil e nao pode ser impresso.
+        if ecom and civil and civil != "Cliente":
+            mapa_civil[ecom] = (civil, civil)
 
     ordem = [str(p.get("numero_ecommerce") or "") for p in resultado["sequencia"]]
     mapa_olist = {
@@ -217,8 +273,13 @@ def _sequencia_e_mapa_olist() -> tuple[list[str], dict[str, str], dict[str, str]
         str(p.get("numero_ecommerce") or ""): _formatar_itens_sku(p.get("itens") or [])
         for p in resultado["sequencia"]
     }
-    return ordem, mapa_olist, mapa_skus
+    return ordem, mapa_olist, mapa_skus, mapa_civil
 
+
+def _sequencia_e_mapa_olist() -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """(ordem_da_esteira, {numero_ecommerce: numero_olist}, {numero_ecommerce: sku_formatado})."""
+    ordem, mapa_olist, mapa_skus, _ = _sequencia_completa()
+    return ordem, mapa_olist, mapa_skus
 
 
 def _ordem_da_esteira() -> list[str]:
@@ -389,6 +450,14 @@ def gerar(*, com_cartao: bool = False,
     import core_nome_civil_nfe as nfe
 
     inicio = time.time()
+    tempos: dict[str, float] = {}
+    _ultimo = [inicio]
+
+    def _marco(etapa: str) -> None:
+        """Segundos desde o marco anterior -- mede, nao muda nada."""
+        agora = time.time()
+        tempos[etapa] = round(agora - _ultimo[0], 1)
+        _ultimo[0] = agora
 
     # 1. Etiquetas dos três canais — reaproveitando a Fase 1 quando ela
     #    COBRE este lote. Ver `core_etiquetas_cache`: a regra e' cobertura
@@ -424,7 +493,13 @@ def gerar(*, com_cartao: bool = False,
     # So' os pacotes que tem etiqueta neste lote precisam de traducao.
     _info_tt = (baixado.get("por_canal") or {}).get("tiktok") or {}
     _presentes = {Path(a).stem for a in (_info_tt.get("arquivos") or [])}
-    mapa_tt = _mapa_tiktok(_presentes or None)
+    # A 1a chamada (acima) ja' traduziu os pacotes do cache; so' repete se
+    # o lote final tiver pacote que ela nao cobriu.
+    if _mapa_tt_cache is not None and _presentes <= set(_mapa_tt_cache):
+        mapa_tt = _mapa_tt_cache
+    else:
+        mapa_tt = _mapa_tiktok(_presentes or None)
+    _marco("etiquetas_e_tiktok")
     arquivos: list[tuple[str, str]] = []   # (caminho, numero_do_pedido)
 
     for canal in ("tiktok", "shopee", "ml", "amazon"):
@@ -474,7 +549,7 @@ def gerar(*, com_cartao: bool = False,
 
     # 3. Posicao de cada pedido na esteira + numero da Olist + SKU vendido
     try:
-        _seq, mapa_olist, mapa_skus = _sequencia_e_mapa_olist()
+        _seq, mapa_olist, mapa_skus, civil_da_fila = _sequencia_completa()
         ordem = {num: i for i, num in enumerate(_seq)}
     except Exception as exc:
         log.warning("Sequencia da esteira indisponivel (%s); "
@@ -482,6 +557,8 @@ def gerar(*, com_cartao: bool = False,
         ordem = {}
         mapa_olist = {}
         mapa_skus = {}
+        civil_da_fila = {}
+    _marco("sequencia")
 
     # Pedido fora da esteira vai para o fim — nunca some.
     FIM = 10_000
@@ -557,7 +634,17 @@ def gerar(*, com_cartao: bool = False,
         # nao tenha), deixar o Olist ganhar e' seguro: onde a nota ja' esta'
         # certa os dois dizem a mesma coisa.
         try:
-            do_olist = cnr.mapa_por_pedido_olist([4, 7]) or {}
+            # Nome civil da fila ja' baixada na etapa 3 (zero chamada nova).
+            # So' vai a API (como antes) se faltar nome para algum pedido do
+            # lote -- rede de seguranca: nunca perde nome por causa do atalho.
+            do_olist = dict(civil_da_fila)
+            _lote = {str(n) for _, n in arquivos}
+            # A fila e' truncada em 100 pedidos (`max_pedidos`); abaixo disso
+            # a listagem da API traria exatamente os mesmos pedidos, entao
+            # rechamar so' queima tempo (e rate limit).
+            if (_lote - set(do_olist)) and len(_seq) >= 100:
+                do_olist.update(cnr.mapa_por_pedido_olist(
+                    [4, 7], somente=_lote - set(do_olist)) or {})
             mapa_pedido_civil.update(do_olist)
             log.info("Nomes civis do Olist: %d pedido(s)", len(do_olist))
         except Exception as exc:
@@ -652,6 +739,7 @@ def gerar(*, com_cartao: bool = False,
 
     doc_final.save(destino)
     doc_final.close()
+    _marco("montagem_e_nomes")
 
     # 6.5 Blinda o PDF para a impressora termica generica.
     # A etiqueta CRUA do canal imprime bem; a nossa, montada, falhava (Jota,
@@ -678,6 +766,8 @@ def gerar(*, com_cartao: bool = False,
             "Ele deve imprimir, mas se a impressora falhar/pular página, "
             "é este o motivo."
         )
+
+    _marco("blindagem")
 
     # 7. Limpa os PDFs intermediarios que sobram no Downloads.
     #
@@ -711,6 +801,7 @@ def gerar(*, com_cartao: bool = False,
             pass
 
     segundos = round(time.time() - inicio, 1)
+    log.info("Gerar pilha: %ss total | etapas: %s", segundos, tempos)
     resumo = f"{len(arquivos)} etiquetas na ordem da esteira"
     if nomes_corrigidos:
         resumo += f" · {nomes_corrigidos} com nome civil acrescentado"
@@ -740,6 +831,7 @@ def gerar(*, com_cartao: bool = False,
         "erros": (baixado.get("erros") or [])
                  + ([erro_blindagem] if erro_blindagem else []),
         "segundos": segundos,
+        "tempos": tempos,
         "resumo": resumo,
         # A tela avisa se a pilha veio do cache da Fase 1 ou de download —
         # decisao de performance nao pode ser silenciosa.

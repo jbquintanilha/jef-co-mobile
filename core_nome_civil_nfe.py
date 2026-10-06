@@ -130,9 +130,24 @@ def indexar(pasta: str | Path | None = None) -> dict[str, dict[str, Any]]:
         log.warning("Pasta de XMLs nao encontrada: %s", raiz)
         return {}
 
+    # ⚡ Parsear ~560 XMLs custa ~1,7s a cada geracao da pilha. O indice so'
+    # muda se a pasta mudar, entao guarda o ultimo resultado e confere uma
+    # assinatura barata (qtd + mtime + tamanho de cada arquivo, so' `stat`).
+    arquivos = list(raiz.glob("*.xml"))
+    try:
+        assinatura = tuple(sorted(
+            (a.name, s.st_mtime_ns, s.st_size)
+            for a, s in ((a, a.stat()) for a in arquivos)))
+    except OSError:
+        assinatura = None
+    chave = str(raiz.resolve())
+    memo = _MEMO_INDICE.get(chave)
+    if assinatura is not None and memo and memo[0] == assinatura:
+        return dict(memo[1])
+
     indice: dict[str, dict[str, Any]] = {}
     sem_oc = 0
-    for arq in raiz.glob("*.xml"):
+    for arq in arquivos:
         d = dados_da_nfe(arq)
         if d["pedido"]:
             indice[d["pedido"]] = d
@@ -141,7 +156,12 @@ def indexar(pasta: str | Path | None = None) -> dict[str, dict[str, Any]]:
 
     log.info("NF-e indexadas: %d pedido(s) (%d nota(s) sem OC)",
              len(indice), sem_oc)
-    return indice
+    if assinatura is not None:
+        _MEMO_INDICE[chave] = (assinatura, indice)
+    return dict(indice)
+
+
+_MEMO_INDICE: dict[str, tuple[tuple, dict[str, dict[str, Any]]]] = {}
 
 
 def mapa_por_pedido(
