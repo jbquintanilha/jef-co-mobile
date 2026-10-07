@@ -67,9 +67,15 @@ log = logging.getLogger(__name__)
 
 PASTA_SAIDA = Path(os.path.expanduser("~")) / "Downloads"
 
-# Quantos agrupamentos de expedicao recentes olhar. O Olist cria um por dia e
-# por forma de envio; 60 cobre ~uma semana com os quatro canais ativos.
-AGRUPAMENTOS_RECENTES = 60
+# 🔴 O Olist NAO cria um agrupamento por dia/forma de envio: cria um por ONDA
+# (medido 07/10/2026: 300 agrupamentos = 208 Shopee, 85 TikTok, 6 Amazon).
+# A versao anterior olhava so' os 60 mais recentes; Shopee/TikTok empurravam o
+# agrupamento da Amazon (03/10) para fora da janela e a etiqueta "sumia" --
+# pedido 701-6136600-3262668 (NF 913) ficou sem etiqueta pela Esteira.
+# Agora a janela e' por DATA (paginando a listagem), nunca por quantidade.
+JANELA_AGRUPAMENTOS_DIAS = 21
+PAGINA_AGRUPAMENTOS = 100
+MAX_PAGINAS_AGRUPAMENTOS = 15
 
 # Codigo da Amazon Logistics no Brasil: "TBR" + digitos.
 RE_RASTREIO_AMAZON = re.compile(r"\bTBR\d{6,}\b")
@@ -138,34 +144,67 @@ def listar_pedidos_a_enviar(*, dias: int = 30) -> list[dict[str, Any]]:
     return pedidos
 
 
-def mapa_expedicoes_amazon(client=None) -> dict[str, tuple[int, int]]:
+def _paginas_de_agrupamentos(client):
+    """Gera os agrupamentos dos ultimos `JANELA_AGRUPAMENTOS_DIAS` dias, pagina a pagina.
+
+    Pagina a listagem (1 chamada por 100, mais novo primeiro) e para quando a
+    pagina inteira ja' e' mais velha que a janela. Gerador: quem consome pode
+    parar assim que achar o que precisa, sem ler a janela toda.
+    """
+    from datetime import date, timedelta
+
+    corte = (date.today() - timedelta(days=JANELA_AGRUPAMENTOS_DIAS)).isoformat()
+    for pagina in range(MAX_PAGINAS_AGRUPAMENTOS):
+        lote = client.listar_expedicoes(limit=PAGINA_AGRUPAMENTOS,
+                                        offset=pagina * PAGINA_AGRUPAMENTOS)
+        if not lote:
+            return
+        yield [a for a in lote if not a.get("data") or str(a["data"]) >= corte]
+        if len(lote) < PAGINA_AGRUPAMENTOS:
+            return
+        # `data` = YYYY-MM-DD; sem data, nao da' para cortar -- continua.
+        if all(a.get("data") and str(a["data"]) < corte for a in lote):
+            return
+    log.warning("Agrupamentos: bateu o teto de %d paginas sem chegar no corte "
+                "de %d dias", MAX_PAGINAS_AGRUPAMENTOS, JANELA_AGRUPAMENTOS_DIAS)
+
+
+def mapa_expedicoes_amazon(client=None,
+                           notas: set[str] | None = None) -> dict[str, tuple[int, int]]:
     """{id_nota: (id_agrupamento, id_expedicao)} dos agrupamentos Amazon recentes.
 
     A listagem de agrupamentos traz so' o cabecalho (e `quantidadeObjetos`
     sempre 0, medido em 27/09) — as expedicoes de cada um exigem um GET
     proprio. Por isso filtra antes pela forma de envio: so' os da Amazon.
+
+    Args:
+        notas: ids de nota que se procura. Quando informado, para de paginar
+            assim que todas forem achadas (a janela inteira custa ~14s).
     """
     from core_olist import OlistClient
 
     client = client or OlistClient()
+    alvo = {str(n) for n in notas} if notas else None
     mapa: dict[str, tuple[int, int]] = {}
-    agrupamentos = client.listar_expedicoes(limit=AGRUPAMENTOS_RECENTES)
-    for ag in agrupamentos:
-        if not _eh_amazon((ag.get("formaEnvio") or {}).get("nome") or ""):
-            continue
-        try:
-            det = client.obter_expedicao(ag["id"])
-        except Exception as exc:
-            log.warning("Agrupamento Amazon %s ilegivel: %s", ag.get("id"), exc)
-            continue
-        for exp in det.get("expedicoes") or []:
-            if exp.get("tipoObjeto") != "notafiscal":
+    for pagina in _paginas_de_agrupamentos(client):
+        for ag in pagina:
+            if not _eh_amazon((ag.get("formaEnvio") or {}).get("nome") or ""):
                 continue
-            id_nota = str(exp.get("idObjeto") or "")
-            # Se a nota aparecer em mais de um agrupamento, fica o primeiro
-            # da lista — a listagem vem do mais novo para o mais antigo.
-            if id_nota and id_nota not in mapa:
-                mapa[id_nota] = (ag["id"], exp["id"])
+            try:
+                det = client.obter_expedicao(ag["id"])
+            except Exception as exc:
+                log.warning("Agrupamento Amazon %s ilegivel: %s", ag.get("id"), exc)
+                continue
+            for exp in det.get("expedicoes") or []:
+                if exp.get("tipoObjeto") != "notafiscal":
+                    continue
+                id_nota = str(exp.get("idObjeto") or "")
+                # Se a nota aparecer em mais de um agrupamento, fica o primeiro
+                # da lista — a listagem vem do mais novo para o mais antigo.
+                if id_nota and id_nota not in mapa:
+                    mapa[id_nota] = (ag["id"], exp["id"])
+        if alvo and alvo <= set(mapa):
+            break
     return mapa
 
 
@@ -223,7 +262,7 @@ def rastreios_pendentes(client=None) -> list[dict[str, Any]]:
     pedidos = listar_pedidos_a_enviar()
     faltam = [p for p in pedidos if p["id_nota"] not in _RASTREIO_POR_NOTA]
     if faltam:
-        mapa = mapa_expedicoes_amazon(client)
+        mapa = mapa_expedicoes_amazon(client, {p["id_nota"] for p in faltam})
         for p in faltam:
             alvo = mapa.get(p["id_nota"])
             if not alvo:
@@ -289,7 +328,7 @@ def baixar_etiquetas(
         return {"pdf": None, "total": 0, "arquivos": [], "falhas": [],
                 "aviso": "Nenhum pedido da Amazon aguardando despacho."}
 
-    mapa = mapa_expedicoes_amazon(client)
+    mapa = mapa_expedicoes_amazon(client, {p["id_nota"] for p in lista})
 
     PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
     tmp_dir = PASTA_SAIDA / f"_amazon_etiquetas_{datetime.now():%Y%m%d_%H%M%S}"

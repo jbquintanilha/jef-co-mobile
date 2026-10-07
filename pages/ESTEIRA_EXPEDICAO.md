@@ -339,3 +339,16 @@ Causas e correções:
 - **Instrumentação:** `gerar()` devolve `tempos` por etapa e loga `Gerar pilha: Xs | etapas: {...}`.
 - **Não alterado de propósito:** blindagem térmica (406 dpi/1-bit), download de etiquetas, ordem/numeração.
 - **Possível próximo passo (não feito, ganho ~4 s):** a página 17 passar a fila já carregada ao `gerar()` e pular o 2º sync.
+
+### v1.5 — 07/10/2026 · Terminador
+**🔴 Etiqueta da Amazon "sumia" da Esteira (risco de punição por envio atrasado) — corrigido.**
+
+Sintoma: Esteira baixou 15 etiquetas, `amazon 0 · ⚠️ 1 problema`: "nota sem agrupamento de expedição Amazon no Olist" (pedido 701-6136600-3262668, NF 913).
+**Causa:** `mapa_expedicoes_amazon` olhava só os **60 agrupamentos mais recentes** do Olist, assumindo "1 por dia e forma de envio".
+Falso: o Olist cria **1 agrupamento por ONDA** (medido: 300 = 208 Shopee, 85 TikTok, 6 Amazon). O agrupamento
+Amazon de 03/10 (id 582447973) ficou fora da janela e o pedido ficou sem etiqueta — a etiqueta EXISTIA no Olist
+(TBR441190855, idêntica à baixada do Seller Central).
+**Correção** (`core_etiquetas_amazon_olist.py`): janela por DATA (21 dias), paginando a listagem (100/pág); `mapa_expedicoes_amazon(client, notas)`
+para ao achar todas as notas pendentes (6,6 s em vez de 14 s). Teste real: etiqueta da Nadia baixada, TBR confere.
+**Regra:** nunca limitar listagem do Olist por QUANTIDADE quando canais de volume diferente dividem a mesma lista — limitar por data.
+**Armadilha relacionada:** mapeamento de situações da Amazon no Olist — `Shipped` marca "Enviado" antes do transportador coletar (`EasyShipShipmentStatus=PendingDropOff`); conferir status real via SP-API, não pelo Olist.
