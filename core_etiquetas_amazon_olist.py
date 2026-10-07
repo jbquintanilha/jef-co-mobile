@@ -298,6 +298,61 @@ def _unificar_pdfs(arquivos: list[Path], saida: str | Path) -> str:
     return str(saida)
 
 
+# Estados do Easy Ship em que o pacote AINDA nao foi entregue ao transportador.
+_EASYSHIP_AGUARDANDO = {"PendingSchedule", "PendingPickUp", "PendingDropOff"}
+_STATUS_AGUARDANDO = {"Unshipped", "PartiallyShipped", "InvoiceUnconfirmed"}
+
+
+def auditar_amazon_pendentes(pedidos_com_etiqueta: set[str]) -> list[str]:
+    """Alertas VISIVEIS de pedido Amazon que ainda nao saiu e esta' sem etiqueta.
+
+    Fonte: SP-API (a verdade da Amazon), nao o Olist -- o Olist marca "Enviado"
+    cedo demais. Pedido pendente = pago e ainda nao entregue ao transportador
+    (`Unshipped`/`PartiallyShipped`/`InvoiceUnconfirmed`, ou `Shipped` com
+    Easy Ship aguardando coleta). Se ele nao entrou nas etiquetas baixadas,
+    vira alerta com o prazo da Amazon (`LatestShipDate`): atraso derruba o
+    indice de cancelamento do vendedor.
+
+    Nunca levanta: se a SP-API falhar, o proprio alerta diz que a auditoria
+    nao rodou (falha silenciosa foi exatamente o que escondeu o pedido 1156).
+    """
+    from datetime import timezone
+
+    try:
+        from amazon.relatorios import Relatorios
+        ped = Relatorios().pedidos(dias=12)
+    except Exception as exc:
+        return [f"🚨 AMAZON: auditoria de pedidos pendentes NAO rodou "
+                f"({type(exc).__name__}: {str(exc)[:80]}). Confira no Seller Central."]
+
+    agora = datetime.now(timezone.utc)
+    alertas: list[str] = []
+    for o in ped:
+        if o.get("FulfillmentChannel") != "MFN":
+            continue
+        st_ = o.get("OrderStatus")
+        easy = o.get("EasyShipShipmentStatus")
+        pendente = (st_ in _STATUS_AGUARDANDO
+                    or (st_ == "Shipped" and easy in _EASYSHIP_AGUARDANDO))
+        oid = o.get("AmazonOrderId") or ""
+        if not pendente or oid in pedidos_com_etiqueta:
+            continue
+        prazo = ""
+        try:
+            lim = datetime.strptime(o["LatestShipDate"], "%Y-%m-%dT%H:%M:%SZ"
+                                    ).replace(tzinfo=timezone.utc)
+            horas = (lim - agora).total_seconds() / 3600
+            prazo = ("ATRASADO há %dh" % -horas) if horas < 0 else (
+                "prazo de envio em %dh" % horas)
+        except Exception:
+            pass
+        alertas.append(
+            f"🚨 AMAZON sem etiqueta na Esteira: {oid} "
+            f"({st_}/{easy or 'sem Easy Ship'}) {prazo} — "
+            "imprima a guia no Seller Central e poste hoje.")
+    return alertas
+
+
 def baixar_etiquetas(
     pedidos: list[str] | None = None,
     *,
@@ -326,7 +381,10 @@ def baixar_etiquetas(
 
     if not lista:
         return {"pdf": None, "total": 0, "arquivos": [], "falhas": [],
-                "aviso": "Nenhum pedido da Amazon aguardando despacho."}
+                "aviso": "Nenhum pedido da Amazon aguardando despacho.",
+                # O Olist nao ve pedido pendente (ex.: nota nao emitida), mas a
+                # Amazon ve -- a auditoria tem que rodar mesmo sem fila.
+                "alertas": auditar_amazon_pendentes(set()) if pedidos is None else []}
 
     mapa = mapa_expedicoes_amazon(client, {p["id_nota"] for p in lista})
 
@@ -364,6 +422,9 @@ def baixar_etiquetas(
         "falhas": falhas,
         "pedidos": lista,
     }
+    if pedidos is None:
+        resultado["alertas"] = auditar_amazon_pendentes(
+            {p["pedido"] for p in lista if any(a.stem == p["pedido"] for a in arquivos)})
     if unificar and arquivos:
         resultado["pdf"] = _unificar_pdfs(
             arquivos,

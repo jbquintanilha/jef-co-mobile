@@ -185,6 +185,11 @@ def baixar_tudo(
         for sn, motivo in (r.get("falhas") or []):
             erros.append(f"{canal}/{sn}: {motivo}")
 
+        # Alertas de auditoria (ex.: Amazon pendente sem etiqueta) -- ja' vem
+        # formatados e VISIVEIS; nunca viram so' "N problema(s)".
+        for alerta in (r.get("alertas") or []):
+            erros.append(alerta)
+
         if not r.get("pdf"):
             continue
 

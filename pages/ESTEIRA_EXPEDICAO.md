@@ -352,3 +352,13 @@ Amazon de 03/10 (id 582447973) ficou fora da janela e o pedido ficou sem etiquet
 para ao achar todas as notas pendentes (6,6 s em vez de 14 s). Teste real: etiqueta da Nadia baixada, TBR confere.
 **Regra:** nunca limitar listagem do Olist por QUANTIDADE quando canais de volume diferente dividem a mesma lista — limitar por data.
 **Armadilha relacionada:** mapeamento de situações da Amazon no Olist — `Shipped` marca "Enviado" antes do transportador coletar (`EasyShipShipmentStatus=PendingDropOff`); conferir status real via SP-API, não pelo Olist.
+
+### v1.6 — 07/10/2026 · Terminador
+**Alerta visível de pedido Amazon pendente sem etiqueta (anti-punição).**
+`auditar_amazon_pendentes()` (`core_etiquetas_amazon_olist.py`) consulta a SP-API (verdade da Amazon, não o Olist) a cada
+download de etiquetas: pedido MFN pago e ainda não entregue ao transportador (`Unshipped`/`PartiallyShipped`/`InvoiceUnconfirmed`,
+ou `Shipped` + Easy Ship `PendingSchedule/PendingPickUp/PendingDropOff`) que NÃO entrou nas etiquetas baixadas vira
+`🚨 AMAZON sem etiqueta na Esteira: <pedido> (<status>) ATRASADO há Nh / prazo de envio em Nh`. Aparece como `st.error`
+na Fase 1 e na Fase 3 (`pages/17_Lista_Separacao.py`), não como "N problema(s)". Roda também quando o Olist não tem fila
+(nota não emitida). Se a SP-API falhar, o próprio alerta avisa que a auditoria não rodou (nunca silencioso). Não roda em
+onda filtrada (`pedidos` informado). Teste real: Nadia 701-6136600-3262668 → "ATRASADO há 37h".

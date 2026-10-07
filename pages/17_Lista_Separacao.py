@@ -1096,6 +1096,8 @@ if fase(0):
                         )
 
                     for e in r_tudo["erros"]:
+                        if str(e).startswith("🚨"):
+                            st.error(e)       # pedido que pode estourar prazo: nunca discreto
                         registrar_erro("1️⃣ Etiquetas", "Etiqueta não baixada", e)
                 except Exception as exc:
                     erro_visivel("1️⃣ Etiquetas",
@@ -1714,7 +1716,10 @@ if fase(2):
                     st.warning(f"⚠️ [ERR-001] Nenhuma etiqueta disponível para gerar a pilha. ({r_es.get('resumo', '')})")
 
                 for e in r_es.get("erros") or []:
-                    st.warning(f"⚠️ [ERR-003] {e}")
+                    if str(e).startswith("🚨"):
+                        st.error(e)
+                    else:
+                        st.warning(f"⚠️ [ERR-003] {e}")
             except Exception as exc:
                 prog_bar.empty()
                 erro_visivel("3️⃣ Etiq + Cartão",
