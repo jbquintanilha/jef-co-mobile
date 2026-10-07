@@ -1040,10 +1040,17 @@ if fase(0):
                     # separacao — antes dela nao existe sequencia definida.
                     # (Jota, 19/08: "temos fase... o numerar deveria ser na
                     #  fase 3 apos ordenar por produto na sequencia")
-                    import core_etiquetas_todas as cet
-                    r_tudo = cet.baixar_tudo(canais=_canais_marcados,
-                                             com_cartao=com_cartao_tudo,
-                                             somente=st.session_state.get("ciclo_selecionado"))
+                    import core_etiquetas_cache as _cache_inc
+                    # Escopo: ciclo (range) > onda travada > fila livre.
+                    # Com escopo so' baixa o que AINDA NAO esta' no cache
+                    # (Jota, 07/10: "baixar apenas as que faltam naquela onda").
+                    _somente_f1 = st.session_state.get("ciclo_selecionado")
+                    if _somente_f1 is None and st.session_state.get("onda_travada") is not None:
+                        _somente_f1 = {str(p.get("numero_ecommerce") or "")
+                                       for p in (_alvo_f1 or [])} - {""} or None
+                    r_tudo = _cache_inc.baixar_so_o_que_falta(
+                        _canais_marcados, com_cartao=com_cartao_tudo,
+                        somente=_somente_f1, cache=st.session_state.get("etq_tudo"))
 
                     # Guarda os individuais fora do Downloads para a Fase 3
                     # reaproveitar sem baixar de novo (~38s). `guardar()` ja'
@@ -1061,6 +1068,12 @@ if fase(0):
                             st.session_state["pdf_tudo_bytes"] = fh.read()
                         st.session_state["pdf_tudo_path"] = r_tudo["pdf"]
                         st.success(f"✅ {r_tudo['resumo']}")
+                        _inc = r_tudo.get("incremental")
+                        if _inc:
+                            st.caption(
+                                f"🎯 Escopo de {_inc['escopo']} pedido(s): "
+                                f"♻️ {_inc['ja_tinha']} já estavam baixados · "
+                                f"⬇️ {_inc['faltavam']} faltavam e foram buscados.")
                     else:
                         st.warning("Nenhuma etiqueta disponível nos três canais.")
 

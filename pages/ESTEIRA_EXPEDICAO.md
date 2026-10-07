@@ -362,3 +362,14 @@ ou `Shipped` + Easy Ship `PendingSchedule/PendingPickUp/PendingDropOff`) que NÃ
 na Fase 1 e na Fase 3 (`pages/17_Lista_Separacao.py`), não como "N problema(s)". Roda também quando o Olist não tem fila
 (nota não emitida). Se a SP-API falhar, o próprio alerta avisa que a auditoria não rodou (nunca silencioso). Não roda em
 onda filtrada (`pedidos` informado). Teste real: Nadia 701-6136600-3262668 → "ATRASADO há 37h".
+
+### v1.7 — 07/10/2026 · Terminador
+**Fase 1 "Baixar tudo de uma vez" agora baixa só o que FALTA da onda.**
+Antes: o botão refazia o download de todo canal marcado (25–70 s por canal), mesmo com onda travada e etiquetas já guardadas.
+Agora (`core_etiquetas_cache.baixar_so_o_que_falta`): escopo = ciclo (range) > onda travada > fila livre. Com escopo, traduz o cache
+para PEDIDO (TikTok via ponte pacote→pedido), baixa só a diferença (`baixar_tudo(somente=faltam)`), junta com o que já tinha
+(só pedidos do escopo) e remonta o PDF único (normaliza 10x15 + cartão, como o `gerar()`). A tela mostra
+"🎯 Escopo de N: ♻️ X já baixados · ⬇️ Y faltavam". Fila livre (sem escopo) NÃO muda: sem lista de referência não dá para provar
+que o cache está completo (pedido novo passaria despercebido). Auditoria Amazon (SP-API) roda também aqui.
+Medido: onda de 6 pedidos com tudo já baixado **31,9 s → 3,1 s**; PDF único com as 12 páginas (6 etiquetas + 6 cartões); pedido
+faltando → só ele é buscado. Fase 3 reaproveita o cache mesclado (`cache_serve` cobre a onda).

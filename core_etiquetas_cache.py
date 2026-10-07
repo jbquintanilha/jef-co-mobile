@@ -266,3 +266,185 @@ def baixar_ou_reaproveitar(
     r["reaproveitado"] = False
     r["motivo_cache"] = motivo
     return r
+
+
+# --------------------------------------------------------------------------- #
+# FASE 1 INCREMENTAL: baixar so' o que falta da onda
+# --------------------------------------------------------------------------- #
+#
+# Jota, 07/10/2026: "essa opcao sempre baixa tudo... ideal seria baixar os que
+# estao na onda selecionada... ou ver quais ja' estao e baixar apenas as que
+# faltam". Antes o botao refazia o download de TODO canal marcado, mesmo com
+# onda travada e com etiquetas ja' guardadas (~25-70s por canal).
+#
+# Regra: com um escopo (onda travada / ciclo) so' se baixa a DIFERENCA. Sem
+# escopo (fila livre) nada muda -- nao ha' lista de referencia, entao nao da'
+# para provar que o cache esta' completo (pedido novo passaria despercebido).
+
+def _pedido_do_arquivo(canal: str, stem: str, mapa_tt: dict[str, str]) -> str:
+    """Numero do pedido a que um arquivo de etiqueta pertence."""
+    return mapa_tt.get(stem, stem) if canal == "tiktok" else stem
+
+
+def baixar_so_o_que_falta(canais: list[str], *, com_cartao: bool = False,
+                          somente: set[str] | None = None,
+                          cache: dict[str, Any] | None = None) -> dict[str, Any]:
+    """`baixar_tudo()` que reaproveita o que ja' esta' no cache da Fase 1.
+
+    Devolve o mesmo formato de `core_etiquetas_todas.baixar_tudo()` mais
+    `incremental`: {"escopo", "ja_tinha", "baixadas", "faltavam"} para a tela
+    ser honesta sobre o que foi (ou nao) baixado.
+    """
+    import core_etiquetas_todas as cet
+
+    if not somente:
+        r = cet.baixar_tudo(canais=canais, com_cartao=com_cartao, somente=None)
+        r["incremental"] = None
+        return r
+
+    inicio = time.time()
+    alvo = {str(x).strip() for x in somente if str(x).strip()}
+
+    # ---- 1. O que o cache ja' tem, traduzido para PEDIDO ------------------- #
+    mapa_tt: dict[str, str] = {}
+    tem_arquivos = False
+    if cache and isinstance(cache, dict):
+        stems_tt = {Path(a).stem for a in
+                    (((cache.get("por_canal") or {}).get("tiktok") or {})
+                     .get("arquivos") or []) if Path(a).exists()}
+        if stems_tt:
+            try:
+                import core_etiquetas_na_esteira as cne
+                mapa_tt = cne._mapa_tiktok(stems_tt)
+            except Exception as exc:
+                log.warning("Incremental: sem ponte pacote->pedido TikTok (%s)", exc)
+
+    antigos: dict[str, list[str]] = {c: [] for c in canais}    # arquivos reaproveitados
+    tem: set[str] = set()                                      # pedidos ja' cobertos
+    if cache and isinstance(cache, dict) and not any(
+            i.get("erro") for c, i in (cache.get("por_canal") or {}).items()
+            if c in canais):
+        for canal in canais:
+            for arq in (((cache.get("por_canal") or {}).get(canal) or {})
+                        .get("arquivos") or []):
+                if not Path(arq).exists():
+                    continue
+                pedido = _pedido_do_arquivo(canal, Path(arq).stem, mapa_tt)
+                if pedido in alvo:
+                    antigos[canal].append(str(arq))
+                    tem.add(pedido)
+                    tem_arquivos = True
+
+    faltam = alvo - tem
+
+    # ---- 2. Baixa so' a diferenca ------------------------------------------ #
+    novo: dict[str, Any] = {"por_canal": {}, "erros": []}
+    if faltam:
+        novo = cet.baixar_tudo(canais=canais, com_cartao=com_cartao, somente=faltam)
+        novo = guardar(novo)         # leva os individuais para a pasta de cache
+
+    if not tem_arquivos:
+        # Nada reaproveitavel: e' o download normal, so' que ja' escopado.
+        if "amazon" in canais:        # onda filtrada nao audita sozinha
+            try:
+                import core_etiquetas_amazon_olist as _am
+                _am_arqs = (((novo.get("por_canal") or {}).get("amazon") or {})
+                            .get("arquivos") or [])
+                novo.setdefault("erros", []).extend(
+                    _am.auditar_amazon_pendentes({Path(a).stem for a in _am_arqs}))
+            except Exception as exc:
+                log.warning("Auditoria Amazon (escopo) falhou: %s", exc)
+        novo["incremental"] = {"escopo": len(alvo), "ja_tinha": 0,
+                               "baixadas": novo.get("total", 0),
+                               "faltavam": len(faltam)}
+        return novo
+
+    # ---- 3. Junta: reaproveitados + recem-baixados (so' do escopo) --------- #
+    por_canal: dict[str, Any] = {}
+    for canal in canais:
+        info_novo = dict((novo.get("por_canal") or {}).get(canal) or {})
+        arqs = list(antigos.get(canal) or [])
+        for a in (info_novo.get("arquivos") or []):
+            if a not in arqs:
+                arqs.append(a)
+        info = dict(info_novo)
+        info["arquivos"] = arqs
+        info["total"] = len(arqs)
+        por_canal[canal] = info
+
+    erros = list(novo.get("erros") or [])
+
+    # PDF unico do que ficou valendo: refaz a partir dos individuais (mesmos
+    # passos do `gerar()`: normaliza 10x15 e, se pedido, intercala o cartao).
+    pdf_final = None
+    try:
+        import fitz
+        import core_etiqueta_normalizar as norm
+        from datetime import datetime
+
+        doc = fitz.open()
+        for canal in canais:
+            for arq in por_canal[canal]["arquivos"]:
+                caminho = arq
+                try:
+                    res = norm.normalizar_10x15(caminho)
+                    if res.get("saida") and Path(res["saida"]).exists():
+                        caminho = res["saida"]
+                except Exception as exc:
+                    erros.append(f"{canal}: normalização 10x15 falhou — {exc}")
+                if com_cartao:
+                    try:
+                        import core_etiqueta_com_cartao as ccc
+                        alvo_pdf = caminho.replace(".pdf", "_cartao.pdf")
+                        if ccc.intercalar_canal_unico(caminho, alvo_pdf, canal).get("ok"):
+                            caminho = alvo_pdf
+                    except Exception as exc:
+                        erros.append(f"{canal}: cartão falhou — {exc}")
+                parcial = fitz.open(caminho)
+                doc.insert_pdf(parcial)
+                parcial.close()
+        if doc.page_count:
+            destino = (Path.home() / "Downloads"
+                       / f"etiquetas_todas_{datetime.now():%Y%m%d_%H%M}.pdf")
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            doc.save(destino)
+            pdf_final = str(destino)
+        doc.close()
+    except Exception as exc:
+        erros.append(f"PDF único não montado: {exc}")
+
+    total = sum(i["total"] for i in por_canal.values())
+    n_ja = len(tem)
+    n_novas = max(total - n_ja, 0)
+
+    # Auditoria Amazon (SP-API) sobre TUDO o que ficou valendo: pedido Amazon
+    # pendente fora desta pilha tambem precisa de alerta visivel.
+    if "amazon" in canais:
+        try:
+            import core_etiquetas_amazon_olist as _am
+            ja_alerta = {str(e) for e in erros}
+            for al in _am.auditar_amazon_pendentes(
+                    {Path(a).stem for a in por_canal["amazon"]["arquivos"]}):
+                if al not in ja_alerta:
+                    erros.append(al)
+        except Exception as exc:
+            log.warning("Auditoria Amazon (incremental) falhou: %s", exc)
+
+    nomes = {"tiktok": "tiktok", "shopee": "shopee", "ml": "ml", "amazon": "amazon"}
+    partes = [f"{total} etiquetas"] + [f"{nomes[c]} {por_canal[c]['total']}"
+                                       for c in canais]
+    partes.append(f"♻️ {n_ja} já baixadas · ⬇️ {n_novas} novas")
+    if erros:
+        partes.append(f"⚠️ {len(erros)} problema(s)")
+    segundos = round(time.time() - inicio, 1)
+    return {
+        "pdf": pdf_final,
+        "total": total,
+        "por_canal": por_canal,
+        "erros": erros,
+        "segundos": segundos,
+        "com_cartao": com_cartao,
+        "resumo": " · ".join(partes) + f" em {segundos}s",
+        "incremental": {"escopo": len(alvo), "ja_tinha": n_ja,
+                        "baixadas": n_novas, "faltavam": len(faltam)},
+    }
