@@ -71,6 +71,24 @@ def _requisicao_supabase(metodo: str, endpoint: str, params: dict | None = None,
     return None
 
 
+def registrar_bipagem_log(dados: dict[str, Any]) -> bool:
+    """Grava UMA tentativa de bipagem em `bipagem_log` (diagnostico do celular).
+
+    Existe para ver o que a camera REALMENTE leu quando o app diz "nao encontrado"
+    (07/10/2026: no PC resolve, no celular nao, e print nao basta). Nunca levanta e
+    nao tenta de novo: log nao pode atrasar nem derrubar a bancada.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    try:
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/bipagem_log",
+                          headers={**_headers(), "Prefer": "return=minimal"},
+                          json=dados, timeout=4)
+        return r.status_code in (200, 201, 204)
+    except Exception:
+        return False
+
+
 def salvar_rastreio_nuvem(dados: dict[str, Any]) -> bool:
     """Salva/atualiza registro de rastreio na tabela `rastreio_pedidos_expedicao` do Supabase."""
     tracking = dados.get("tracking")

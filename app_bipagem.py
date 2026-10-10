@@ -155,6 +155,46 @@ with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_m
     if st.button("🔄 Recarregar", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+    if st.button("📨 Relatar erro", use_container_width=True, key="btn_relatar_erro"):
+        from datetime import datetime as _dtr
+        _res = st.session_state.get("scanner_resultado") or {}
+        try:
+            _ua = str(st.context.headers.get("User-Agent", ""))[:160]
+        except Exception:
+            _ua = ""
+        _linhas = [
+            f"RELATO DE ERRO · bipador · {_dtr.now():%d/%m/%Y %H:%M:%S}",
+            f"último código: {st.session_state.get('scanner_ultimo_codigo')!r}",
+            f"resultado: {'ENCONTRADO' if _res.get('encontrado') else 'NÃO ENCONTRADO'}"
+            f" · canal={_res.get('canal') or '-'} · pedido={_res.get('pedido_ecommerce') or '-'}",
+            f"motivo: {_res.get('motivo') or _res.get('erro') or '-'}",
+            f"diagnóstico: {st.session_state.get('bip_diag') or '-'}",
+            f"modo de leitura: {st.session_state.get('bip_modo_leitura')}",
+            f"base: {', '.join(f'{c} {q}' for c, (_n, q) in sorted(_fr.items())) if _fr else 'ilegível'}",
+            f"aparelho: {_ua or '-'}",
+            "últimas leituras:",
+        ] + [f"  {h}" for h in (st.session_state.get("bip_hist") or ["(nenhuma)"])]
+        _texto = chr(10).join(_linhas)
+        _gravou = False
+        try:
+            import core_scanner_supabase as _nv
+            _gravou = _nv.registrar_bipagem_log({
+                "codigo_bruto": repr(st.session_state.get("scanner_ultimo_codigo"))[:120],
+                "codigo_limpo": str(st.session_state.get("scanner_ultimo_codigo") or "")[:60],
+                "encontrado": bool(_res.get("encontrado")),
+                "motivo": "RELATO DO OPERADOR",
+                "origem": "RELATO",
+                "canal": str(_res.get("canal") or ""),
+                "diag": _texto[:1500],
+            })
+        except Exception:
+            _gravou = False
+        st.session_state["bip_relato"] = (_texto, _gravou)
+    if st.session_state.get("bip_relato"):
+        _t, _g = st.session_state["bip_relato"]
+        st.success("✅ Relato enviado para o Terminador." if _g else
+                   "⚠️ Não consegui enviar sozinho — copie o texto abaixo e cole no Telegram.")
+        st.code(_t, language=None)
     if st.button("🔒 Sair (bloquear)", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()

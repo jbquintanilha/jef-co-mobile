@@ -53,6 +53,53 @@ def limpar_leitura() -> None:
     st.session_state.scanner_validacao = None
 
 
+def _logar_tentativa(bruto: str, limpo: str, res_: dict | None) -> None:
+    """Registra a tentativa em `bipagem_log` (thread: nao atrasa a bancada)."""
+    try:
+        import threading
+        res_ = res_ or {}
+        sessao = ""
+        try:
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            ctx = get_script_run_ctx()
+            sessao = (ctx.session_id[:8] if ctx else "")
+        except Exception:
+            pass
+        dados = {
+            "codigo_bruto": repr(bruto)[:120],
+            "codigo_limpo": str(limpo)[:60],
+            "tamanho": len(str(limpo)),
+            "encontrado": bool(res_.get("encontrado")),
+            "motivo": str(res_.get("motivo") or res_.get("erro") or "")[:200],
+            "origem": str(st.session_state.get("bip_modo_leitura") or ""),
+            "canal": str(res_.get("canal") or ""),
+            "pedido": str(res_.get("pedido_ecommerce") or res_.get("pedido") or "")[:40],
+            "diag": str(st.session_state.get("bip_diag") or "")[:400],
+            "sessao": sessao,
+        }
+
+        try:   # ultimas tentativas desta sessao -- alimenta o botao "Relatar erro"
+            from datetime import datetime as _dt
+            _h = st.session_state.setdefault("bip_hist", [])
+            _h.append(f"{_dt.now():%H:%M:%S} · lido={dados['codigo_bruto']} · "
+                      f"{'ACHOU' if dados['encontrado'] else 'NAO ACHOU'}"
+                      f"{' · ' + dados['canal'] if dados['canal'] else ''}")
+            del _h[:-8]
+        except Exception:
+            pass
+
+        def _enviar():
+            try:
+                import core_scanner_supabase as _n
+                _n.registrar_bipagem_log(dados)
+            except Exception:
+                pass
+
+        threading.Thread(target=_enviar, daemon=True).start()
+    except Exception:
+        pass
+
+
 def processar_codigo(codigo: str, forcar: bool = False) -> None:
     """Resolve o codigo lido e deixa a ficha pronta.
 
@@ -109,6 +156,7 @@ def processar_codigo(codigo: str, forcar: bool = False) -> None:
             diag["erro_nuvem"] = f"{type(exc).__name__}: {str(exc)[:120]}"
         st.session_state["bip_diag"] = " · ".join(f"{k}={v}" for k, v in diag.items())
     st.session_state.scanner_resultado = res_
+    _logar_tentativa(bruto, limpo, res_)
 
     # Som marcado AQUI (na leitura nova), nao no render: o Streamlit re-executa a
     # pagina inteira a cada interacao e tocar no render repetiria o bip.
