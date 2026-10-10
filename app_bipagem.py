@@ -194,7 +194,36 @@ with st.expander("⚙️ Ajustes", expanded=bool(st.session_state.get("scanner_m
         _t, _g = st.session_state["bip_relato"]
         st.success("✅ Relato enviado para o Terminador." if _g else
                    "⚠️ Não consegui enviar sozinho — copie o texto abaixo e cole no Telegram.")
-        st.code(_t, language=None)
+        # st.code tem botao de copiar, mas ele usa navigator.clipboard, que o navegador
+        # BLOQUEIA dentro do iframe do modo tela cheia/embed (10/10/2026: "nao copia nada").
+        # Este componente roda no proprio iframe: copia no clique com execCommand (nao exige
+        # permissao de iframe), tenta o clipboard moderno e oferece Compartilhar (abre a folha
+        # de compartilhamento do Android -> Telegram). O texto fica selecionavel como reserva.
+        import json as _json
+        components.html(
+            """<div style="font-family:sans-serif">
+<textarea id="t" readonly style="width:100%;height:150px;font-size:12px;box-sizing:border-box"></textarea>
+<div style="display:flex;gap:8px;margin-top:6px">
+<button id="c" style="flex:1;padding:12px;font-size:15px">📋 Copiar</button>
+<button id="s" style="flex:1;padding:12px;font-size:15px">📤 Compartilhar</button></div>
+<div id="m" style="margin-top:6px;font-size:13px;min-height:18px"></div></div>
+<script>
+const T=""" + _json.dumps(_t) + """;
+const ta=document.getElementById('t'), m=document.getElementById('m');
+ta.value=T;
+function msg(x){m.textContent=x;}
+document.getElementById('c').onclick=async function(){
+  let ok=false;
+  try{ta.focus();ta.select();ta.setSelectionRange(0,999999);ok=document.execCommand('copy');}catch(e){}
+  if(!ok){try{await navigator.clipboard.writeText(T);ok=true;}catch(e){}}
+  msg(ok?'✅ Copiado! Cole no Telegram.':'⚠️ Não deu para copiar sozinho: o texto acima está selecionado — segure e escolha Copiar.');
+  if(!ok){ta.focus();ta.select();}
+};
+document.getElementById('s').onclick=async function(){
+  try{await navigator.share({text:T});msg('✅ Compartilhado.');}
+  catch(e){msg('⚠️ Compartilhar indisponível aqui — use Copiar.');}
+};
+</script>""", height=290)
     if st.button("🔒 Sair (bloquear)", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
