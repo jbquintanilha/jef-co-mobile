@@ -929,6 +929,10 @@ if fase(0):
             atualizar_separacao()
     _alvo_f1, _pend_f1, _feitos_f1 = _widget_ondas("f1")
     st.session_state["_pend_olist_count"] = len(_pend_f1)
+    # Fila INTEIRA do Olist = ainda sem onda + ja' em onda. O aviso "Olist desatualizado" da
+    # Fase 1 comparava as etiquetas baixadas so' com os SEM onda: com tudo ja' em onda dava
+    # "0 pendente(s)" e acusava Olist desatualizado sem estar (29/10/2026).
+    st.session_state["_olist_total_count"] = len(_pend_f1) + len(_feitos_f1)
 
     # Pedido que nao espelhou no Supabase existe so' no SQLite da maquina que
     # rodou o populator — aqui no mobile ele cai no Olist ao vivo, que nao
@@ -1085,12 +1089,13 @@ if fase(0):
                     # o Olist ainda nao' viu. Sem este aviso, a Fila mostra
                     # "2 pendentes" enquanto 10 etiquetas ja' foram baixadas,
                     # e ninguem percebe a defasagem.
-                    _pend_olist = st.session_state.get("_pend_olist_count", 0)
-                    if r_tudo["total"] > _pend_olist:
+                    _olist_total = st.session_state.get(
+                        "_olist_total_count", st.session_state.get("_pend_olist_count", 0))
+                    if r_tudo["total"] > _olist_total:
                         st.warning(
                             f"⚠️ Baixei **{r_tudo['total']} etiqueta(s)**, mas a "
-                            f"Fila de ondas só tem **{_pend_olist} pendente(s)** "
-                            "do Olist. Provável que o Olist esteja desatualizado "
+                            f"fila do Olist só tem **{_olist_total} pedido(s)** "
+                            "(sem onda + já em onda). Provável que o Olist esteja desatualizado "
                             "— clique em **Atualizar separação** (Fase 2) antes "
                             "de montar a onda, senão pedido fica de fora."
                         )
@@ -1111,6 +1116,8 @@ if fase(0):
                     for e in r_tudo["erros"]:
                         if str(e).startswith("🚨"):
                             st.error(e)       # pedido que pode estourar prazo: nunca discreto
+                        elif str(e).startswith("⚠️ AMAZON"):
+                            st.warning(e)     # aguardando postagem, com prazo: visivel mas nao alarme
                         registrar_erro("1️⃣ Etiquetas", "Etiqueta não baixada", e)
                 except Exception as exc:
                     erro_visivel("1️⃣ Etiquetas",

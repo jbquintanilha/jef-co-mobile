@@ -338,6 +338,7 @@ def auditar_amazon_pendentes(pedidos_com_etiqueta: set[str]) -> list[str]:
         if not pendente or oid in pedidos_com_etiqueta:
             continue
         prazo = ""
+        horas = None
         try:
             lim = datetime.strptime(o["LatestShipDate"], "%Y-%m-%dT%H:%M:%SZ"
                                     ).replace(tzinfo=timezone.utc)
@@ -346,6 +347,18 @@ def auditar_amazon_pendentes(pedidos_com_etiqueta: set[str]) -> list[str]:
                 "prazo de envio em %dh" % horas)
         except Exception:
             pass
+        # 🔧 29/10/2026 — `PendingPickUp`/`PendingDropOff` significam que a AMAZON JA' GEROU a guia
+        # do Easy Ship: falta so' POSTAR/ser coletado. Dizer "sem etiqueta... imprima a guia"
+        # era falso (o pedido 701-7009528-0340215 ficou assim por dias) e treina o operador a
+        # ignorar o alerta. So' `PendingSchedule`/`Unshipped`/etc. realmente nao tem guia.
+        if st_ == "Shipped" and easy in ("PendingPickUp", "PendingDropOff"):
+            urgente = horas is not None and horas <= 24
+            alertas.append(
+                f"{'🚨' if urgente else '⚠️'} AMAZON aguardando "
+                f"{'coleta' if easy == 'PendingPickUp' else 'postagem'}: {oid} "
+                f"({easy}) {prazo} — a Amazon já gerou a guia; confira se já foi "
+                f"impressa e leve ao ponto de entrega{' HOJE' if urgente else ''}.")
+            continue
         alertas.append(
             f"🚨 AMAZON sem etiqueta na Esteira: {oid} "
             f"({st_}/{easy or 'sem Easy Ship'}) {prazo} — "

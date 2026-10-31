@@ -10,28 +10,35 @@
 # AUTOR: Terminador (001) / Claude
 # ==============================================================================
 """
-A ordem (definida pelo Jota, 2026-08-16; item 5 invertido em 2026-08-26):
+A ordem (definida pelo Jota; REDEFINIDA em 2026-10-29 -- vale esta):
 
-    "tudo da meia media branca, depois tudo da meia media preta, depois tudo da
-     meia media sortida... depois invisivel masculina de cor especifica, depois
-     as sortidas... o mesmo na colorida. Excecao para pedidos multiplos — esses
-     agrupa e faz fora de ordem mesmo."
-
+    "feminina primeiro... cores solidas antes dentro de cada genero, apos
+     sortida... ordem de invisivel, soquete e cano medio, demais itens siga
+     ordem alfabetica"
+    "itens multiplos concentre no fim da sua categoria, exemplo 2x kit6 meia
+     invisivel"
     "é sempre melhor começar pelo que é mais específico... os kits 3 sempre
      primeiro e depois você ir aumentando a quantidade deles" (26/08/2026)
 
 Traduzido em criterios de ordenacao, nesta ordem de peso:
 
-    1. MULTI-ITEM por ultimo   — pedido com mais de um atomo nao encaixa em
-                                 nenhum grupo; vai para o fim, agrupado
-    2. FAMILIA                 — MEIAS antes de CALCINHAS etc (ordem do estoque)
-    3. LINHA do produto        — MEMED antes de MEINV (SPU + tamanho)
-    4. COR, sortida por ultimo — BRA, PRE, CIN... e SOR fecha cada linha
+    1. FAMILIA                 — MEIAS antes de CALCINHAS etc (ordem do estoque)
+    2. LINHA / CATEGORIA       — INVISIVEL (feminina 35/40, depois masculina
+                                 40/46) -> SOQUETE (cano baixo) -> CANO MEDIO;
+                                 as demais linhas seguem ordem alfabetica
+                                 (ORDEM_MODELO). ⚠️ Ate' 29/10 a linha ia em
+                                 ordem alfabetica pura e a Soquete saia ANTES
+                                 de tudo.
+    3. MULTIPLOS no FIM da categoria — dentro de CADA categoria os pedidos
+                                 multiplos vao depois dos normais: quantidade
+                                 maior que 1 (ex.: 2x Kit 6 Invisivel) e pedido
+                                 com mais de um produto. Antes iam para o fim
+                                 de TUDO.
+    4. COR, sortida por ultimo — BRA, PRE, CIN... e SOR fecha a categoria. O
+                                 KIT SORTIDO do Cano Medio (BRA+PRE no mesmo
+                                 kit, 1 unidade) conta como sortida da linha,
+                                 NAO como multi-item.
     5. QUANTIDADE crescente    — kit MENOR primeiro (Kit3, Kit6, Kit9...).
-                                 ⚠️ INVERTIDO em 26/08 (era maior primeiro,
-                                 desde 16/08) — pedido do Jota, o kit mais
-                                 especifico/simples de conferir vem primeiro,
-                                 o volume vai crescendo ao longo do grupo.
 
 Por que a sortida fecha o grupo: ela e' a que exige escolher pecas do monte
 misturado. Deixar por ultimo evita alternar entre "pegar do pacote fechado" e
@@ -61,6 +68,21 @@ ORDEM_FAMILIA = ["MEIAS", "CALCINHAS", "TOPS & SUTIAS", "CONJUNTOS", "OUTROS"]
 # Cor sortida fecha cada linha: e' a unica que exige garimpar no monte misto.
 COR_SORTIDA = "SOR"
 
+# Ordem das CATEGORIAS (modelo = 5 primeiras letras do SPU) dentro da familia.
+# Jota, 29/10/2026: invisivel, soquete e cano medio; o resto segue a ordem alfabetica.
+ORDEM_MODELO = ["MEINV", "MEBAI", "MEMED"]
+
+
+def _rank_modelo(linha: str) -> int:
+    m = (linha or "")[:5].upper()
+    return ORDEM_MODELO.index(m) if m in ORDEM_MODELO else len(ORDEM_MODELO)
+
+
+def _ordem_linha(linha: str) -> tuple[int, str]:
+    """(posicao da categoria, linha). Na mesma categoria o texto desempata, o que poe a
+    feminina (...3540) antes da masculina (...4046)."""
+    return (_rank_modelo(linha), linha or "")
+
 
 def _peso_familia(familia: str) -> int:
     familia = (familia or "").strip().upper()
@@ -69,6 +91,8 @@ def _peso_familia(familia: str) -> int:
 
 def _classificar(pedido: dict[str, Any]) -> dict[str, Any]:
     """Descobre em que grupo de embalagem o pedido entra."""
+    import core_separacao as _cs
+
     itens = pedido.get("itens") or []
 
     atomos: list[dict[str, Any]] = []
@@ -85,79 +109,61 @@ def _classificar(pedido: dict[str, Any]) -> dict[str, Any]:
     distintos = {a["atomo"] for a in atomos}
     total_pecas = sum(a["qtd"] for a in atomos)
 
-    # Multi-item = mais de um atomo distinto. Nao pertence a grupo nenhum.
-    # ⚠️ Quantidade > 1 do MESMO item continua no grupo do atomo (a coleta e'
-    # a mesma prateleira), mas a bancada precisa ver o numero de unidades —
-    # por isso `unidades` sobe no registro.
-    multi = len(distintos) > 1
+    def _linha_do_atomo(atomo: str) -> str:
+        return atomo[:-3] if len(atomo) > 3 else atomo
 
-    if multi:
-        # ⚠️ Multi-item vai para o fim, mas os IGUAIS ficam juntos: quem monta
-        # 3 caixas de branca+preta faz as tres seguidas. `atomo_chave` e' a
-        # combinacao ordenada, entao pedidos com a mesma mistura se agrupam.
+    linhas = {_linha_do_atomo(a) for a in distintos}
+
+    # KIT SORTIDO: 1 item cujo kit junta 2+ cores da MESMA linha (ex.: BRA3-PRE3_KIT6).
+    # Nao e' multi-item: e' a sortida da linha e fecha a categoria (Jota, 29/10/2026).
+    kit_sortido = len(itens) == 1 and len(distintos) > 1 and len(linhas) == 1
+    # MULTI-ITEM de verdade: produtos diferentes no pedido.
+    multi_item = len(distintos) > 1 and not kit_sortido
+    # QUANTIDADE > 1 (ex.: 2x Kit 6): tambem vai para o fim da categoria.
+    qtd_multipla = unidades > 1
+    multiplo = multi_item or qtd_multipla
+
+    if multi_item:
+        # Os IGUAIS ficam juntos: `atomo_chave` e' a combinacao ordenada.
         combinacao = " + ".join(sorted(distintos))
-
-        # 🆕 25/09/2026 — Ordenacao fisica de bancada (aprovado /conselho
-        # secao 23, chave de sort do Monge). Antes o multi-item ordenava
-        # so' pela string `combinacao` -- coincidencia de alfabeto, sem
-        # relacao com o deslocamento real do operador entre prateleiras.
-        #
-        # ⚠️ CORRECAO 25/09: a proposta original usava `extrair_familia`
-        # (MEIAS/CALCINHAS/...), mas essa granularidade e' GROSSEIRA DEMAIS
-        # pra bancada -- MEINV (Invisivel) e MEMED (Cano Medio) sao ambas
-        # "MEIAS", mas ficam em prateleiras/caixas FISICAS diferentes.
-        # A diferenca real de deslocamento e' a LINHA do produto (SPU+
-        # tamanho, o mesmo criterio 3 ja usado no grupo unico), nao a
-        # familia ampla. Usando linha em vez de familia:
-        #   - is_cross_linha: True se os atomos vem de LINHAS diferentes
-        #     (custa mais passos que ficar na mesma linha/prateleira)
-        #   - peso_familia_dominante: mantido p/ desempate entre combinacoes
-        #     cross-linha (ainda usa a familia ampla como 2o criterio)
-        #   - tem_sortida: algum atomo da combinacao e' cor sortida
-        #     (ainda exige garimpar no monte, mesmo dentro do multi-item)
-        import core_separacao as _cs
-
-        def _linha_do_atomo(atomo: str) -> str:
-            return atomo[:-3] if len(atomo) > 3 else atomo
-
-        def _modelo_da_linha(linha: str) -> str:
-            # Linha sem a grade de tamanho: MEINVMAY1013540 -> MEINVMAY101.
-            # Invisivel FEM 35/40 e MASC 40/46 sao linhas diferentes, mas o
-            # MESMO modelo -- parentes na prateleira (Jota, 25/09: "sao
-            # diferentes, porem mais parecidas que invisivel e cano medio...
-            # junta, mas separa").
-            import re as _re
-            return _re.sub(r"\d{4}$", "", linha)
-
-        linhas_combinacao = {_linha_do_atomo(a) for a in distintos}
-        modelos_combinacao = {_modelo_da_linha(l) for l in linhas_combinacao}
-        is_cross_linha = len(linhas_combinacao) > 1
-        # 0 = mesma linha (1 prateleira) · 1 = mesmo modelo, grades
-        # diferentes (prateleiras vizinhas) · 2 = modelos diferentes
-        nivel_mistura = (0 if len(linhas_combinacao) == 1
-                         else 1 if len(modelos_combinacao) == 1 else 2)
-        familias_combinacao = {_cs.extrair_familia(a) for a in distintos}
+        familias = {_cs.extrair_familia(a) for a in distintos}
         peso_familia_dominante = min(
-            (_peso_familia(f) for f in familias_combinacao), default=len(ORDEM_FAMILIA)
-        )
-        tem_sortida = any(a.upper().endswith(COR_SORTIDA) for a in distintos)
-
+            (_peso_familia(f) for f in familias), default=len(ORDEM_FAMILIA))
         return {
             "multi": True,
+            "multi_item": True,
+            "multiplo": True,
             "atomo_chave": combinacao,
             "familia": "MULTI-ITEM",
-            "linha": combinacao,        # mantido p/ exibicao (titulo do grupo na lista)
+            "linha": combinacao,        # exibicao (titulo do grupo na lista)
+            # categoria onde o pedido cai: a PRIMEIRA na ordem da bancada
+            "linha_ordem": min(_ordem_linha(l) for l in linhas),
             "cor": "",
             "sortido": False,
             "total_pecas": total_pecas,
             "unidades": unidades,
             "atomos": atomos,
-            "is_cross_linha": is_cross_linha,
-            "nivel_mistura": nivel_mistura,
-            "modelos_chave": " + ".join(sorted(modelos_combinacao)),
             "peso_familia_dominante": peso_familia_dominante,
             "num_distintos": len(distintos),
-            "tem_sortida": tem_sortida,
+            "tem_sortida": any(a.upper().endswith(COR_SORTIDA) for a in distintos),
+        }
+
+    if kit_sortido:
+        combinacao = " + ".join(sorted(distintos))
+        linha = next(iter(linhas))
+        return {
+            "multi": multiplo,
+            "multi_item": False,
+            "multiplo": multiplo,
+            "atomo_chave": combinacao,
+            "familia": _cs.extrair_familia(sorted(distintos)[0]),
+            "linha": linha,
+            "linha_ordem": _ordem_linha(linha),
+            "cor": combinacao,
+            "sortido": True,            # fecha a categoria
+            "total_pecas": total_pecas,
+            "unidades": unidades,
+            "atomos": atomos,
         }
 
     atomo = next(iter(distintos), "")
@@ -165,10 +171,13 @@ def _classificar(pedido: dict[str, Any]) -> dict[str, Any]:
     linha, cor = (atomo[:-3], atomo[-3:]) if len(atomo) > 3 else (atomo, "")
 
     return {
-        "multi": False,
+        "multi": multiplo,
+        "multi_item": False,
+        "multiplo": multiplo,
         "atomo_chave": atomo,
         "familia": "",          # preenchida por `sequenciar` via core_separacao
         "linha": linha,
+        "linha_ordem": _ordem_linha(linha),
         "cor": cor,
         "sortido": cor.upper() == COR_SORTIDA,
         "total_pecas": total_pecas,
@@ -203,36 +212,23 @@ def sequenciar(dados: dict[str, Any]) -> dict[str, Any]:
         enriquecidos.append({**pedido, **info})
 
     def _chave_sort(p: dict[str, Any]) -> tuple:
-        # O 1o elemento (`p["multi"]`) sempre separa os dois grupos antes de
-        # qualquer outra comparacao -- Python so' olha o 2o elemento da tupla
-        # quando o 1o empata, e como aqui e' sempre False vs True, os dois
-        # ramos abaixo NUNCA sao comparados item-a-item entre si (senao
-        # comparar bool com string quebraria em runtime).
-        if p["multi"]:
-            # 🆕 25/09/2026 — chave aprovada /conselho secao 23 (Monge),
-            # ajustada apos teste real: familia ampla -> nivel de mistura
-            # por linha/modelo (ver _classificar). Substitui a ordenacao por
-            # string alfabetica da combinacao -- Sala de Guerra secao 22-24.
-            # Combinacoes identicas continuam coladas: compartilham todos os
-            # campos antes de `atomo_chave`.
-            return (
-                True,                              # multi-item sempre depois do grupo unico
-                p.get("nivel_mistura", 2),         # mesma linha > mesmo modelo > modelos diferentes
-                p.get("peso_familia_dominante", len(ORDEM_FAMILIA)),
-                p.get("modelos_chave", ""),        # mesma mistura de modelos fica junta
-                p.get("num_distintos", 99),        # menos produtos distintos = mais simples
-                p.get("tem_sortida", False),       # sortida fecha o subgrupo
-                p["atomo_chave"],                  # a mesma combinacao exata, colada
-                p["total_pecas"],                  # peso total crescente, mesmo criterio 5
-                str(p.get("numero_ecommerce") or ""),
-            )
+        # Chave unica (tipos iguais em cada posicao):
+        #   familia -> categoria (ordem da bancada) -> NORMAIS antes dos MULTIPLOS ->
+        #   (dentro dos multiplos: quantidade>1 antes de multi-item) -> sortida fecha ->
+        #   cor -> kit menor primeiro -> numero do pedido (desempate estavel).
+        multi_item = bool(p.get("multi_item"))
+        fam = (p.get("peso_familia_dominante", len(ORDEM_FAMILIA)) if multi_item
+               else _peso_familia(p["familia"]))
+        rank_spu, linha = p["linha_ordem"]
         return (
-            False,                             # 1. multi-item por ultimo
-            _peso_familia(p["familia"]),      # 2. familia (ordem do estoque)
-            p["linha"],                       # 3. linha do produto
-            p["sortido"],                     # 4. sortida fecha a linha
-            p["cor"],                         #    cores em ordem alfabetica
-            p["total_pecas"],                 # 5. kit MENOR primeiro (invertido 26/08)
+            fam,                               # 1. familia
+            rank_spu,                          # 2. categoria = SPU: invisivel, soquete, cano medio...
+            bool(p.get("multiplo")),           # 3. multiplos no FIM do SPU (fem + masc juntas)
+            multi_item,                        #    qtd>1 antes de multi-item
+            linha,                             # 4. dentro do SPU: feminina antes da masculina
+            bool(p.get("tem_sortida")) if multi_item else bool(p["sortido"]),  # 5. sortida fecha
+            p["atomo_chave"] if multi_item else p["cor"],      # combinacao igual fica colada
+            p["total_pecas"],                  # 6. kit MENOR primeiro
             str(p.get("numero_ecommerce") or ""),
         )
 

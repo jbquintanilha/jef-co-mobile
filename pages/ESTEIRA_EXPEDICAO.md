@@ -7,7 +7,7 @@
 > ⛔ **Toda alteração escreve uma entrada no HISTÓRICO DE VERSÕES, no fim
 > deste arquivo.** Sem exceção.
 
-**Versão atual:** v1.1 · 24/09/2026
+**Versão atual:** v1.9 · 31/10/2026
 
 ---
 
@@ -373,3 +373,26 @@ para PEDIDO (TikTok via ponte pacote→pedido), baixa só a diferença (`baixar_
 que o cache está completo (pedido novo passaria despercebido). Auditoria Amazon (SP-API) roda também aqui.
 Medido: onda de 6 pedidos com tudo já baixado **31,9 s → 3,1 s**; PDF único com as 12 páginas (6 etiquetas + 6 cartões); pedido
 faltando → só ele é buscado. Fase 3 reaproveita o cache mesclado (`cache_serve` cobre a onda).
+
+### v1.8 — 29/10/2026 · Terminador
+**Nova ordem da pilha de embalagem (etiquetas + lista de montagem)** — regra redefinida pelo Jota em 29/10 (`core_sequencia_embalagem.py`).
+Ordem: **família** (meias → calcinhas…) → **SPU**: **Invisível** (feminina 35/40, depois masculina 40/46) → **Soquete** (cano baixo, `MEBAI`) →
+**Cano médio**; demais SPUs em ordem alfabética (`ORDEM_MODELO`). Dentro de cada gênero/linha: **cores sólidas antes**, **sortida fecha**,
+kit MENOR primeiro. **Pedidos múltiplos vão para o FIM DO SEU SPU** (não mais do fim de tudo): primeiro quantidade > 1 (ex.: 2x Kit 6 Invisível),
+depois pedido com mais de um produto; pedido com SPUs diferentes (1x Invisível + 1x Cano médio) cai no fim do PRIMEIRO SPU na ordem (Invisível).
+**Kit sortido de 1 unidade** (ex.: `BRA3-PRE3_KIT6` do Cano médio) NÃO é mais multi-item: é a sortida da linha e fecha o Cano médio.
+Defeito corrigido: a linha ia em ordem alfabética pura (`MEBAI` < `MEINV` < `MEMED`), então a Soquete saía ANTES de tudo; e todo multi-item
+(inclusive o kit sortido) ia para o fim de TODA a pilha. Verificado com o lote real do PDF `etiquetas_esteira_20261029_0839.pdf` (18 etiquetas
+sequenciadas, mesma ordem de antes para Invisível → Cano médio) e casos novos (fem/masc, soquete, 2x kit, multi-item cross-SPU).
+**Nota (não é defeito):** etiquetas de pedido que NÃO está na fila do Olist (`sincronizar([4,7], max_pedidos=100)`) vão ao FIM sem SKU nem nº Olist
+(#19/#20 daquele PDF: Shopee 261029UK0DFAE4 e 261029UET8X8CG).
+
+### v1.9 — 31/10/2026 · Terminador
+**Dois avisos falsos da Fase 1 corrigidos** (achados no print do Jota: "Fila só tem 0 pendente(s)" + "AMAZON sem etiqueta").
+1. **"Olist desatualizado" (`pages/17_Lista_Separacao.py`):** comparava as etiquetas baixadas com `_pend_f1`, que conta só pedido SEM onda. Com tudo já em onda
+   dava "0 pendente(s)" e acusava Olist desatualizado sem estar. Agora compara com a fila INTEIRA (`_olist_total_count` = sem onda + já em onda).
+2. **Alerta Amazon (`auditar_amazon_pendentes`, `core_etiquetas_amazon_olist.py`):** `Shipped` + Easy Ship `PendingPickUp`/`PendingDropOff` = a Amazon JÁ gerou a guia,
+   falta postar/coleta; o texto "sem etiqueta... imprima a guia" era falso (pedido 701-7009528-0340215 ficou assim por dias). Agora: `⚠️ AMAZON aguardando postagem/coleta`
+   (aviso visível inline na Fase 1, `st.warning`) e vira `🚨 ... HOJE` (`st.error`) só com ≤24h ou atrasado. `PendingSchedule`/`Unshipped`/`PartiallyShipped`/`InvoiceUnconfirmed`
+   continuam `🚨 sem etiqueta` (aí a guia realmente não existe). Critério de quem entra no alerta NÃO mudou (anti-punição, v1.6).
+Testado com os 2 pedidos Amazon reais de hoje (702-3877090-5446611 e 701-7009528-0340215, ambos `PendingDropOff`, prazo 04/11).
