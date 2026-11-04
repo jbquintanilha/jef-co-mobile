@@ -7,7 +7,7 @@
 > ⛔ **Toda alteração escreve uma entrada no HISTÓRICO DE VERSÕES, no fim
 > deste arquivo.** Sem exceção.
 
-**Versão atual:** v1.11 · 04/11/2026
+**Versão atual:** v1.12 · 04/11/2026
 
 ---
 
@@ -420,3 +420,10 @@ Medido com profiler — o tempo era rede desperdiçada, não trabalho:
   ANTERIORES ficam em `amazon_agrupamentos.json`; os de hoje são sempre relidos (pode entrar nota nova).
 Teste: `baixar_tudo(["ml","amazon"], com_cartao=True)` → 4 etiquetas nas 4 rodadas (127 s → 14 s no mesmo processo; 32–61 s em processo novo). Variação do 1º clique =
 429 do Olist (limite de requisições), não do código. Na nuvem o cache em disco some a cada redeploy (1º clique volta a ser o mais lento).
+
+### v1.12 — 04/11/2026 · Terminador
+**Etiquetas do ML sumiam da pilha da Fase 3 e saíam com folha A4 extra.** `core_etiquetas_ml_api.baixar_etiquetas` gravava o lote inteiro como `lote_00.pdf`; a pilha
+(`core_etiquetas_na_esteira.gerar`) e o cache incremental casam arquivo pelo NÚMERO DO PEDIDO → `lote_00` não casava e o ML era DESCARTADO com onda/escopo (pilha
+saía só com a Amazon; a Fase 1 contava "ml 1" para 2 etiquetas). E o ML anexa uma folha A4 "Identificação do produto" que ia junto. Agora: 1 arquivo por envio, nome =
+número do pedido do Olist (`_PEDIDO_POR_SID`, inclusive pack), só a página estreita 10x15 (`_so_pagina_etiqueta`; se nenhuma for estreita, mantém o PDF inteiro).
+Teste real (onda de 04/11): pilha com 4 etiquetas + 4 cartões, todas 100x150 mm, #1 #1678 · #2 #1677 · #3 #1676 · #4 #1674.

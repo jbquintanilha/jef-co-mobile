@@ -57,7 +57,6 @@ Uso:
 """
 
 from __future__ import annotations
-import core_env_loader
 
 import logging
 import os
@@ -65,18 +64,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import tempfile
-
-def _get_pasta_saida() -> Path:
-    if os.name == "nt":
-        p = Path(os.path.expanduser("~")) / "Downloads"
-    else:
-        p = Path(tempfile.gettempdir()) / "downloads_jef"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
 log = logging.getLogger(__name__)
-PASTA_SAIDA = _get_pasta_saida()
+
+PASTA_SAIDA = Path(os.path.expanduser("~")) / "Downloads"
 
 # Quantos shipments por chamada. O endpoint aceita lista, mas URL longa
 # demais falha inteira -- em lote pequeno a falha fica isolada.
@@ -85,7 +75,8 @@ LOTE = 10
 # Preenchido por `listar_envios_a_despachar`: envios ML `pending`, que
 # NENHUMA API imprime (nem ML nem Olist) e saem so' pelo modal do Olist.
 _ULTIMOS_REPRESADOS: list[dict[str, Any]] = []
-_ULTIMOS_SEM_ENVIO: list[dict[str, Any]] = []   # pendente no Olist, mas sem envio achado no ML
+_ULTIMOS_SEM_ENVIO: list[dict[str, Any]] = []
+_PEDIDO_POR_SID: dict[str, str] = {}   # shipment_id -> numero do pedido no Olist (nome do arquivo)   # pendente no Olist, mas sem envio achado no ML
 
 # Status do SHIPMENT que o ML aceita imprimir.
 #
@@ -176,6 +167,7 @@ def listar_envios_a_despachar(*, dias: int = 30) -> list[dict[str, Any]]:
         vistos.add(sid)
         if pack:
             vistos.add(pack)
+        _PEDIDO_POR_SID[sid] = str(num)
         envios.append({
             "pedido": num,
             "shipment_id": sid,
@@ -197,6 +189,25 @@ def _falhas_sem_envio(usar: bool) -> list[tuple[str, str]]:
         return []
     return [(x["pedido"], f"envio NAO encontrado no ML (Olist #{x['numero_olist']} {x['cliente']}) - imprima pelo modal do Olist")
             for x in _ULTIMOS_SEM_ENVIO]
+
+
+def _so_pagina_etiqueta(pdf: bytes) -> bytes:
+    """Tira a folha A4 de "Identificacao do produto" que o ML anexa: fica so' a etiqueta
+    (pagina estreita, ~100x150mm). Se nenhuma pagina for estreita, devolve o PDF intacto
+    -- melhor imprimir a mais do que perder a etiqueta."""
+    import fitz
+    try:
+        doc = fitz.open(stream=pdf, filetype="pdf")
+        novo = fitz.open()
+        for i, pg in enumerate(doc):
+            if pg.rect.width < 400:          # 10x15 = 283pt; A4 = 595pt
+                novo.insert_pdf(doc, from_page=i, to_page=i)
+        if len(novo) == 0:
+            return pdf
+        return novo.tobytes(garbage=3, deflate=True)
+    except Exception as exc:
+        log.warning("ML: nao consegui separar a pagina da etiqueta: %s", exc)
+        return pdf
 
 
 def _baixar_lote(shipment_ids: list[str]) -> bytes | None:
@@ -263,31 +274,22 @@ def baixar_etiquetas(
     arquivos: list[Path] = []
     falhas: list[tuple[str, str]] = []
 
-    for i in range(0, len(shipment_ids), LOTE):
-        lote = shipment_ids[i:i + LOTE]
+    # 🔴 04/11/2026 — 1 arquivo POR PEDIDO, nomeado pelo numero do pedido, so' com a pagina da
+    # etiqueta. Antes: o lote virava `lote_00.pdf` (a pilha da Fase 3 casa arquivo por NUMERO DO
+    # PEDIDO, nao achava `lote_00` e DESCARTAVA as etiquetas do ML) e vinha junto a folha A4
+    # "Identificacao do produto" que o ML anexa (Jota: "esta' saindo com outra que nao e' a etiqueta").
+    for sid in shipment_ids:
+        sid = str(sid)
         try:
-            conteudo = _baixar_lote(lote)
+            um = _baixar_lote([sid])
         except Exception as exc:
-            conteudo = None
-            log.warning("Lote ML %s falhou: %s", lote, exc)
-        if not conteudo:
-            # Lote inteiro falhou: tenta uma a uma pra nao perder as boas
-            # por causa de um shipment problematico.
-            for sid in lote:
-                try:
-                    um = _baixar_lote([sid])
-                except Exception as exc:
-                    falhas.append((sid, f"{type(exc).__name__}: {exc}"[:120]))
-                    continue
-                if um:
-                    destino = tmp_dir / f"{sid}.pdf"
-                    destino.write_bytes(um)
-                    arquivos.append(destino)
-                else:
-                    falhas.append((sid, "etiqueta indisponivel"))
+            falhas.append((sid, f"{type(exc).__name__}: {exc}"[:120]))
             continue
-        destino = tmp_dir / f"lote_{i // LOTE:02d}.pdf"
-        destino.write_bytes(conteudo)
+        if not um:
+            falhas.append((sid, "etiqueta indisponivel"))
+            continue
+        destino = tmp_dir / f"{_PEDIDO_POR_SID.get(sid, sid)}.pdf"
+        destino.write_bytes(_so_pagina_etiqueta(um))
         arquivos.append(destino)
 
     resultado: dict[str, Any] = {
