@@ -74,8 +74,20 @@ _PRAZO_MAX = _dt.datetime(2099, 1, 1)  # pedidos sem prazo vao pro fim da fila
 # ------------------------------------------------------------------ #
 # ML — prazo de despacho + etiqueta
 # ------------------------------------------------------------------ #
-def _ml_headers() -> dict | None:
-    tok = core_ml_auth.get_token()
+# ⚡ 04/11/2026 — a Fase 1 levava 75-120s so' no ML: cada chamada abria conexao HTTPS nova
+# (84 handshakes = 45s) e relia o token do Supabase (32 leituras = 20s). Sessao unica
+# (keep-alive) + token em memoria por 2 min. No 401 o cache e' descartado e o token renovado.
+_SESSAO_ML = requests.Session()
+_TOKEN_ML: dict = {"tok": None, "ts": 0.0}
+_TOKEN_ML_TTL_S = 120
+
+
+def _ml_headers(forcar: bool = False) -> dict | None:
+    import time as _t
+    if forcar or not _TOKEN_ML["tok"] or (_t.monotonic() - _TOKEN_ML["ts"]) > _TOKEN_ML_TTL_S:
+        _TOKEN_ML["tok"] = core_ml_auth.get_token()
+        _TOKEN_ML["ts"] = _t.monotonic()
+    tok = _TOKEN_ML["tok"]
     if not tok:
         return None
     return {"Authorization": f"Bearer {tok}"}
@@ -88,17 +100,17 @@ def _ml_get(path: str) -> dict | None:
     if not h:
         return None
     try:
-        r = requests.get(f"{ML_API}{path}", headers=h, timeout=15)
+        r = _SESSAO_ML.get(f"{ML_API}{path}", headers=h, timeout=15)
         if r.status_code == 401:
             # token expirado -> renova uma vez e retenta
             try:
                 core_ml_auth.atualizar_token()
             except Exception:
                 return None
-            h = _ml_headers()
+            h = _ml_headers(forcar=True)
             if not h:
                 return None
-            r = requests.get(f"{ML_API}{path}", headers=h, timeout=15)
+            r = _SESSAO_ML.get(f"{ML_API}{path}", headers=h, timeout=15)
         if r.status_code == 200:
             return r.json()
     except requests.RequestException:
@@ -177,16 +189,16 @@ def baixar_etiqueta_ml(shipment_id: int | str, *, formato: str = "pdf") -> bytes
         return None
     params = {"shipment_ids": str(shipment_id), "response_type": formato}
     try:
-        r = requests.get(f"{ML_API}/shipment_labels", headers=h, params=params, timeout=20)
+        r = _SESSAO_ML.get(f"{ML_API}/shipment_labels", headers=h, params=params, timeout=20)
         if r.status_code == 401:
             try:
                 core_ml_auth.atualizar_token()
             except Exception:
                 return None
-            h = _ml_headers()
+            h = _ml_headers(forcar=True)
             if not h:
                 return None
-            r = requests.get(f"{ML_API}/shipment_labels", headers=h, params=params, timeout=20)
+            r = _SESSAO_ML.get(f"{ML_API}/shipment_labels", headers=h, params=params, timeout=20)
         if r.status_code == 200 and r.content:
             return r.content
         # O ML explica a recusa no corpo (ex: NOT_PRINTABLE_STATUS quando o

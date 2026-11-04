@@ -265,7 +265,11 @@ class OlistClient:
             headers = self._headers(accept)
             if json_payload is not None:
                 headers["Content-Type"] = "application/json"
-            resp = requests.request(
+            # ⚡ 04/11/2026: sessao reaproveitada (keep-alive). Antes cada chamada abria HTTPS novo
+            # (~0,55s de handshake cada; a Fase 1 da Esteira faz dezenas).
+            if getattr(self, "_sessao", None) is None:
+                self._sessao = requests.Session()
+            resp = self._sessao.request(
                 method, url, headers=headers, params=params,
                 json=json_payload, timeout=30,
             )

@@ -114,6 +114,11 @@ def listar_pedidos_a_enviar(*, dias: int = 30) -> list[dict[str, Any]]:
 
     client = None
     pedidos: list[dict[str, Any]] = []
+    # ⚡ 04/11/2026: o resumo do Olist nunca traz `idNotaFiscal`, entao cada pedido Amazon custava
+    # 1 GET de detalhe a cada clique -- e esses GETs tomavam 429 (15s parado cada). Nota emitida
+    # nao muda: fica em cache local por id do pedido no Olist.
+    notas_cache = _ler_cache_json("amazon_nota_por_pedido.json")
+    cache_mudou = False
     for p in _pedidos_olist():
         ecom = p.get("ecommerce") or {}
         num = ecom.get("numeroPedidoEcommerce") or ""
@@ -121,7 +126,7 @@ def listar_pedidos_a_enviar(*, dias: int = 30) -> list[dict[str, Any]]:
             continue
         if not _pedido_pendente(p):
             continue
-        id_nota = p.get("idNotaFiscal")
+        id_nota = p.get("idNotaFiscal") or notas_cache.get(str(p.get("id")))
         if not id_nota:
             # Resumo nao traz o campo -- confere no detalhe antes de
             # descartar (so' para os que ja passaram nos filtros acima,
@@ -135,13 +140,39 @@ def listar_pedidos_a_enviar(*, dias: int = 30) -> list[dict[str, Any]]:
         if not id_nota:
             log.info("Amazon %s sem nota fiscal ainda — sem etiqueta", num)
             continue
+        if notas_cache.get(str(p.get("id"))) != str(id_nota):
+            notas_cache[str(p.get("id"))] = str(id_nota)
+            cache_mudou = True
         pedidos.append({
             "pedido": num,
             "id_olist": p.get("id"),
             "id_nota": str(id_nota),
             "cliente": (p.get("cliente") or {}).get("nome") or "",
         })
+    if cache_mudou:
+        _gravar_cache_json("amazon_nota_por_pedido.json", notas_cache, manter=500)
     return pedidos
+
+
+def _ler_cache_json(nome: str) -> dict:
+    import json as _json
+    from pathlib import Path as _P
+    try:
+        return _json.loads((_P.home() / ".cache" / "jf_etiquetas" / nome).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _gravar_cache_json(nome: str, dados: dict, *, manter: int = 300) -> None:
+    import json as _json
+    from pathlib import Path as _P
+    try:
+        arq = _P.home() / ".cache" / "jf_etiquetas" / nome
+        arq.parent.mkdir(parents=True, exist_ok=True)
+        recentes = dict(sorted(dados.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0)[-manter:])
+        arq.write_text(_json.dumps(recentes), encoding="utf-8")
+    except Exception as exc:       # cache e' so' aceleracao -- nunca derruba o lote
+        log.warning("Cache %s nao gravado: %s", nome, exc)
 
 
 def _paginas_de_agrupamentos(client):
@@ -183,29 +214,68 @@ def mapa_expedicoes_amazon(client=None,
     """
     from core_olist import OlistClient
 
+    from datetime import date
+
     client = client or OlistClient()
     alvo = {str(n) for n in notas} if notas else None
     mapa: dict[str, tuple[int, int]] = {}
+    # ⚡ 04/11/2026: cada clique relia ~14 agrupamentos (1 GET cada) e tomava 429 do Olist
+    # (2 x 15s parado) -> Amazon levava 60-190s. Agrupamento de DIA ANTERIOR nao muda: o
+    # conteudo fica em cache local; so' os de hoje (ou sem data) sao relidos sempre.
+    cache = _ler_cache_agrupamentos()
+    hoje = date.today().isoformat()
+    mudou = False
     for pagina in _paginas_de_agrupamentos(client):
         for ag in pagina:
             if not _eh_amazon((ag.get("formaEnvio") or {}).get("nome") or ""):
                 continue
-            try:
-                det = client.obter_expedicao(ag["id"])
-            except Exception as exc:
-                log.warning("Agrupamento Amazon %s ilegivel: %s", ag.get("id"), exc)
-                continue
-            for exp in det.get("expedicoes") or []:
-                if exp.get("tipoObjeto") != "notafiscal":
+            chave = str(ag["id"])
+            data_ag = str(ag.get("data") or "")
+            if chave in cache and data_ag and data_ag < hoje:
+                pares = cache[chave]
+            else:
+                try:
+                    det = client.obter_expedicao(ag["id"])
+                except Exception as exc:
+                    log.warning("Agrupamento Amazon %s ilegivel: %s", ag.get("id"), exc)
                     continue
-                id_nota = str(exp.get("idObjeto") or "")
+                pares = [[str(exp.get("idObjeto") or ""), exp["id"]]
+                         for exp in det.get("expedicoes") or []
+                         if exp.get("tipoObjeto") == "notafiscal"]
+                if data_ag and data_ag < hoje:
+                    cache[chave] = pares
+                    mudou = True
+            for id_nota, id_exp in pares:
                 # Se a nota aparecer em mais de um agrupamento, fica o primeiro
                 # da lista — a listagem vem do mais novo para o mais antigo.
                 if id_nota and id_nota not in mapa:
-                    mapa[id_nota] = (ag["id"], exp["id"])
+                    mapa[id_nota] = (ag["id"], id_exp)
         if alvo and alvo <= set(mapa):
             break
+    if mudou:
+        _gravar_cache_agrupamentos(cache)
     return mapa
+
+
+def _arquivo_cache_agrupamentos():
+    from pathlib import Path as _P
+    return _P.home() / ".cache" / "jf_etiquetas" / "amazon_agrupamentos.json"
+
+
+def _ler_cache_agrupamentos() -> dict:
+    return _ler_cache_json("amazon_agrupamentos.json")
+
+
+def _gravar_cache_agrupamentos(cache: dict) -> None:
+    import json as _json
+    try:
+        arq = _arquivo_cache_agrupamentos()
+        arq.parent.mkdir(parents=True, exist_ok=True)
+        # so' os 300 mais recentes (ids crescem com o tempo)
+        recentes = dict(sorted(cache.items(), key=lambda kv: int(kv[0]))[-300:])
+        arq.write_text(_json.dumps(recentes), encoding="utf-8")
+    except Exception as exc:       # cache e' so' aceleracao -- nunca derruba o lote
+        log.warning("Cache de agrupamentos Amazon nao gravado: %s", exc)
 
 
 def baixar_pdf_expedicao(id_agrupamento: int, id_expedicao: int,

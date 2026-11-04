@@ -127,16 +127,26 @@ _CACHE_PEDIDOS_TS: float = 0.0
 _CACHE_TTL_SEG = 120
 
 
+import threading as _threading
+_TRAVA_PEDIDOS = _threading.Lock()
+
+
 def _pedidos_olist(*, forcar: bool = False) -> list[dict]:
-    """Listagem de pedidos do Olist com cache curto (TTL 120s)."""
+    """Listagem de pedidos do Olist com cache curto (TTL 120s).
+
+    ⚡ 04/11/2026: com trava. ML e Amazon rodam em PARALELO na Fase 1 e os dois erravam o
+    cache ao mesmo tempo -> a fila inteira (17 paginas, ~27s) era listada duas vezes e
+    gerava 429 no Olist. Agora o 2o espera o 1o e reaproveita.
+    """
     global _CACHE_PEDIDOS, _CACHE_PEDIDOS_TS
-    agora = time.monotonic()
-    if (not forcar and _CACHE_PEDIDOS is not None
-            and (agora - _CACHE_PEDIDOS_TS) < _CACHE_TTL_SEG):
+    with _TRAVA_PEDIDOS:
+        agora = time.monotonic()
+        if (not forcar and _CACHE_PEDIDOS is not None
+                and (agora - _CACHE_PEDIDOS_TS) < _CACHE_TTL_SEG):
+            return _CACHE_PEDIDOS
+        _CACHE_PEDIDOS = _client_olist().listar_pedidos_todos()
+        _CACHE_PEDIDOS_TS = time.monotonic()
         return _CACHE_PEDIDOS
-    _CACHE_PEDIDOS = _client_olist().listar_pedidos_todos()
-    _CACHE_PEDIDOS_TS = agora
-    return _CACHE_PEDIDOS
 
 
 def _client_olist():

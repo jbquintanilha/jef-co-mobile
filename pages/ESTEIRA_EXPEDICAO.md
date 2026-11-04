@@ -7,7 +7,7 @@
 > ⛔ **Toda alteração escreve uma entrada no HISTÓRICO DE VERSÕES, no fim
 > deste arquivo.** Sem exceção.
 
-**Versão atual:** v1.10 · 04/11/2026
+**Versão atual:** v1.11 · 04/11/2026
 
 ---
 
@@ -407,3 +407,16 @@ visível na tela; só é reportado quando a listagem do Olist rodou naquela cham
 (3) `pages/17_Lista_Separacao.py`: o alerta `AMAZON aguardando postagem/coleta` não é mais registrado como "Etiqueta não baixada"; só conta como grave se `🚨` (≤24h/atrasado).
 Teste real: pack 2000015843168451 → envio 48418360914 `ready_to_ship/printed`, prazo 04/11 10h; pedido normal e número inexistente inalterados; listagem passou de 1 para 2 envios ML.
 **Lentidão medida (não corrigida):** pilha completa 121–439 s; ML ~87 s e Amazon ~86 s no download. Sintoma de tela "demora/erro".
+
+### v1.11 — 04/11/2026 · Terminador
+**Fase 1 "Baixar ML + Amazon" de 120–190 s para ~30–60 s (1º clique) e ~14 s (cliques seguintes). Mesmas etiquetas.**
+Medido com profiler — o tempo era rede desperdiçada, não trabalho:
+- **ML:** cada chamada abria HTTPS novo (84 handshakes = 45 s) e relia o token do Supabase (32 leituras = 20 s). `core_esteira`: `requests.Session` única
+  (`_SESSAO_ML`) + token em memória 2 min (`_ml_headers(forcar=True)` após renovar no 401).
+- **Olist:** `core_olist.request` reaproveita sessão (keep-alive). `core_scanner_populator._pedidos_olist` ganhou trava: ML e Amazon rodam em paralelo e listavam a fila
+  inteira (17 páginas) duas vezes ao mesmo tempo, provocando 429 (15 s parado cada).
+- **Amazon:** `listar_pedidos_a_enviar` buscava o detalhe de cada pedido só para ler `idNotaFiscal` (o resumo não traz) e tomava 429 → cache local
+  `~/.cache/jf_etiquetas/amazon_nota_por_pedido.json` (nota emitida não muda). `mapa_expedicoes_amazon` relia ~14 agrupamentos por clique → agrupamentos de DIAS
+  ANTERIORES ficam em `amazon_agrupamentos.json`; os de hoje são sempre relidos (pode entrar nota nova).
+Teste: `baixar_tudo(["ml","amazon"], com_cartao=True)` → 4 etiquetas nas 4 rodadas (127 s → 14 s no mesmo processo; 32–61 s em processo novo). Variação do 1º clique =
+429 do Olist (limite de requisições), não do código. Na nuvem o cache em disco some a cada redeploy (1º clique volta a ser o mais lento).
