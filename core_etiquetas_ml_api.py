@@ -85,6 +85,7 @@ LOTE = 10
 # Preenchido por `listar_envios_a_despachar`: envios ML `pending`, que
 # NENHUMA API imprime (nem ML nem Olist) e saem so' pelo modal do Olist.
 _ULTIMOS_REPRESADOS: list[dict[str, Any]] = []
+_ULTIMOS_SEM_ENVIO: list[dict[str, Any]] = []   # pendente no Olist, mas sem envio achado no ML
 
 # Status do SHIPMENT que o ML aceita imprimir.
 #
@@ -125,6 +126,7 @@ def listar_envios_a_despachar(*, dias: int = 30) -> list[dict[str, Any]]:
     envios: list[dict[str, Any]] = []
     represados: list[dict[str, Any]] = []   # `pending`: so' saem pelo modal do Olist
     vistos: set[str] = set()
+    _ULTIMOS_SEM_ENVIO.clear()
 
     for p in _pedidos_olist():
         ecom = p.get("ecommerce") or {}
@@ -140,7 +142,17 @@ def listar_envios_a_despachar(*, dias: int = 30) -> list[dict[str, Any]]:
             log.warning("ML %s: shipment nao resolvido: %s", num, exc)
             continue
         sid = str(info.get("shipment_id") or "")
-        if not sid or sid in vistos:
+        if not sid:
+            # Pedido pendente no Olist cujo envio NAO foi achado no ML (numero inexistente, token,
+            # API fora). Antes sumia sem aviso (04/11/2026: pack do Olist dava 404). Agora vira
+            # erro visivel na tela via `falhas`.
+            _ULTIMOS_SEM_ENVIO.append({
+                "pedido": num,
+                "cliente": (p.get("cliente") or {}).get("nome") or "",
+                "numero_olist": p.get("numeroPedido") or p.get("numero") or "",
+            })
+            continue
+        if sid in vistos:
             continue
         # Corte pelo status REAL do envio no ML, nao pela situacao do Olist.
         status = str(info.get("status") or "").lower()
@@ -177,6 +189,14 @@ def listar_envios_a_despachar(*, dias: int = 30) -> list[dict[str, Any]]:
     global _ULTIMOS_REPRESADOS
     _ULTIMOS_REPRESADOS = represados
     return envios
+
+
+def _falhas_sem_envio(usar: bool) -> list[tuple[str, str]]:
+    """Pedidos pendentes no Olist sem envio no ML, no formato de `falhas` (aparece na tela)."""
+    if not usar:
+        return []
+    return [(x["pedido"], f"envio NAO encontrado no ML (Olist #{x['numero_olist']} {x['cliente']}) - imprima pelo modal do Olist")
+            for x in _ULTIMOS_SEM_ENVIO]
 
 
 def _baixar_lote(shipment_ids: list[str]) -> bytes | None:
@@ -219,6 +239,7 @@ def baixar_etiquetas(
         {"pdf": caminho, "total": n, "arquivos": [...], "falhas": [(id, motivo)]}
     """
     envios: list[dict[str, Any]] = []
+    listou_olist = shipment_ids is None
     if shipment_ids is None:
         envios = listar_envios_a_despachar(dias=dias)
         shipment_ids = [e["shipment_id"] for e in envios]
@@ -231,7 +252,8 @@ def baixar_etiquetas(
                      f"API imprime nesse estado. Use o modal do Olist.")
         else:
             aviso = "Nenhum pedido do Mercado Livre aguardando despacho."
-        return {"pdf": None, "total": 0, "arquivos": [], "falhas": [],
+        return {"pdf": None, "total": 0, "arquivos": [],
+                "falhas": _falhas_sem_envio(listou_olist),
                 "aviso": aviso, "represados": rep}
 
     PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
@@ -272,7 +294,7 @@ def baixar_etiquetas(
         "pdf": None,
         "total": len(shipment_ids) - len(falhas),
         "arquivos": [str(a) for a in arquivos],
-        "falhas": falhas,
+        "falhas": falhas + _falhas_sem_envio(listou_olist),
         "envios": envios,
         "represados": list(_ULTIMOS_REPRESADOS),
     }

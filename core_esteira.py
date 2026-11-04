@@ -115,15 +115,29 @@ def obter_prazo_despacho_ml(numero_ecommerce: str) -> dict:
     out = {"shipment_id": None, "status": None, "substatus": None,
            "prazo_despacho": None, "tracking": None, "pack_id": None}
     pedido = _ml_get(f"/orders/{numero_ecommerce}")
+    pack_resolvido = None
     if not pedido:
-        return out
+        # 🔴 04/11/2026 — o Olist guarda como "numero do pedido" o ID do PACK quando a compra
+        # vem agrupada (pedido #1676: 2000015843168451). `/orders/{pack}` da' 404, o envio
+        # nao era achado e a etiqueta SUMIA da Esteira sem nenhum aviso. `/packs/{id}` devolve
+        # `shipment.id` e a lista de pedidos reais.
+        pack = _ml_get(f"/packs/{numero_ecommerce}")
+        if not pack:
+            return out
+        pack_resolvido = pack.get("id") or numero_ecommerce
+        pedidos_pack = pack.get("orders") or []
+        pedido = {"shipping": pack.get("shipment") or {}, "pack_id": pack_resolvido}
+        if not (pedido["shipping"] or {}).get("id") and pedidos_pack:
+            # sem shipment no pack: usa o 1o pedido real (todos do pack dividem o envio)
+            pedido = _ml_get(f"/orders/{pedidos_pack[0].get('id')}") or pedido
+            pedido.setdefault("pack_id", pack_resolvido)
     ship = pedido.get("shipping") or {}
     sid = ship.get("id")
     out["shipment_id"] = sid
     # pack_id: varias compras do mesmo cliente numa etiqueta so'. Vem no
     # pedido, nao no shipment. Necessario pro bipador avisar a bancada que a
     # caixa leva mais de um pedido.
-    out["pack_id"] = pedido.get("pack_id")
+    out["pack_id"] = pedido.get("pack_id") or pack_resolvido
     if not sid:
         return out
     det = _ml_get(f"/shipments/{sid}") or {}

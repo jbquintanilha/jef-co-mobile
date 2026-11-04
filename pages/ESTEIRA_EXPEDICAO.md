@@ -7,7 +7,7 @@
 > ⛔ **Toda alteração escreve uma entrada no HISTÓRICO DE VERSÕES, no fim
 > deste arquivo.** Sem exceção.
 
-**Versão atual:** v1.9 · 31/10/2026
+**Versão atual:** v1.10 · 04/11/2026
 
 ---
 
@@ -396,3 +396,14 @@ sequenciadas, mesma ordem de antes para Invisível → Cano médio) e casos novo
    (aviso visível inline na Fase 1, `st.warning`) e vira `🚨 ... HOJE` (`st.error`) só com ≤24h ou atrasado. `PendingSchedule`/`Unshipped`/`PartiallyShipped`/`InvoiceUnconfirmed`
    continuam `🚨 sem etiqueta` (aí a guia realmente não existe). Critério de quem entra no alerta NÃO mudou (anti-punição, v1.6).
 Testado com os 2 pedidos Amazon reais de hoje (702-3877090-5446611 e 701-7009528-0340215, ambos `PendingDropOff`, prazo 04/11).
+
+### v1.10 — 04/11/2026 · Terminador
+**Pedido ML com PACK sumia da Esteira (etiqueta a menos, sem erro) + alerta Amazon com título próprio.**
+O Olist guarda como "número do pedido" o **ID do PACK** quando a compra do ML vem agrupada (pedido #1676: `2000015843168451`, pedido real `2000019317696072`).
+`GET /orders/{pack}` dá 404; `obter_prazo_despacho_ml` devolvia vazio e `listar_envios_a_despachar` descartava o pedido em silêncio — a tela baixava 3 de 4 etiquetas.
+**Correção:** (1) `core_esteira.obter_prazo_despacho_ml`: se `/orders/{id}` der 404 consulta `/packs/{id}` (traz `shipment.id` e `orders[]`); preenche `pack_id`.
+(2) `core_etiquetas_ml_api`: pedido pendente no Olist SEM envio achado no ML deixa de sumir — vira `falhas` (`ml/<pedido>: envio NAO encontrado no ML (Olist #N cliente) - imprima pelo modal do Olist`),
+visível na tela; só é reportado quando a listagem do Olist rodou naquela chamada (não em chamada filtrada por onda). `total` não é descontado por essas falhas.
+(3) `pages/17_Lista_Separacao.py`: o alerta `AMAZON aguardando postagem/coleta` não é mais registrado como "Etiqueta não baixada"; só conta como grave se `🚨` (≤24h/atrasado).
+Teste real: pack 2000015843168451 → envio 48418360914 `ready_to_ship/printed`, prazo 04/11 10h; pedido normal e número inexistente inalterados; listagem passou de 1 para 2 envios ML.
+**Lentidão medida (não corrigida):** pilha completa 121–439 s; ML ~87 s e Amazon ~86 s no download. Sintoma de tela "demora/erro".

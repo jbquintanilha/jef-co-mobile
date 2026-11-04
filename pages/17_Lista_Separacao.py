@@ -273,15 +273,15 @@ def atualizar_separacao(*, reset: bool = False) -> None:
             # invisivel na Fase 6 ate' rodar o populator manualmente). Mesma
             # fonte (Olist), um so' clique — nao faz sentido pedir duas vezes.
             #
-            # 🔴 EM BACKGROUND desde 19/09. `force=False` NAO basta:
-            # `_ULTIMO_REFRESH` nasce 0.0 a cada processo novo, entao a
-            # PRIMEIRA chamada sempre passa pelo throttle e faz a varredura
-            # inteira (Shopee+ML+TikTok, 1-3 chamadas HTTP sequenciais por
-            # pedido) -- medido 18/09: +120s. Aqui na nuvem isso quase nunca
-            # aparecia porque o processo fica vivo horas e o primeiro acesso
-            # do dia ja' pagava o custo; no PC local, que reinicia direto,
-            # travava toda vez. A Fase 6 so' precisa do indice minutos
-            # depois, entao roda fora da thread da UI.
+            # 🔴 EM BACKGROUND desde 18/09. `force=False` NAO resolveu o
+            # travamento: `_ULTIMO_REFRESH` nasce 0.0 a cada processo novo,
+            # entao a PRIMEIRA chamada sempre passa pelo throttle e faz a
+            # varredura inteira (Shopee+ML+TikTok, 1-3 chamadas HTTP
+            # sequenciais por pedido) -- medido 18/09: +120s. Online parecia
+            # rapido so' porque o processo fica vivo horas e o primeiro
+            # acesso ja' tinha pago o custo; local reinicia e paga de novo.
+            # A Fase 6 (bipagem) so' precisa do indice minutos depois, entao
+            # roda fora da thread da UI e a tela segue na hora.
             _disparar_populator_async()
 
             if not pedidos:
@@ -934,11 +934,11 @@ if fase(0):
     # "0 pendente(s)" e acusava Olist desatualizado sem estar (29/10/2026).
     st.session_state["_olist_total_count"] = len(_pend_f1) + len(_feitos_f1)
 
-    # Pedido que nao espelhou no Supabase existe so' no SQLite da maquina que
-    # rodou o populator — aqui no mobile ele cai no Olist ao vivo, que nao
-    # resolve rastreio J&T do TikTok, e a bipagem diz "nao encontrado". O
-    # aviso aparece pra o problema ser visto ANTES de ir pra bancada (achado
-    # 18/09: 5 pedidos ficaram invisiveis e so' descobrimos por acaso no log).
+    # Pedido que nao espelhou no Supabase existe so' no SQLite desta maquina —
+    # no celular ele cai no Olist ao vivo, que nao resolve rastreio J&T do
+    # TikTok, e a bipagem diz "nao encontrado". O aviso aparece aqui pra o
+    # problema ser visto ANTES de ir pra bancada (achado 18/09: 5 pedidos
+    # ficaram invisiveis pro mobile e so' descobrimos por acaso no log).
     try:
         import core_scanner_db as _db_espelho
         _pend_nuvem = _db_espelho.contar_espelho_pendente()
@@ -947,8 +947,8 @@ if fase(0):
     if _pend_nuvem:
         st.warning(
             f"☁️ **{_pend_nuvem} pedido(s) ainda não espelhado(s) na nuvem** — "
-            "visíveis no PC da bancada, mas podem dar *não encontrado* ao "
-            "bipar aqui. O sistema tenta de novo sozinho a cada sincronização."
+            "visíveis neste PC, mas o celular pode dizer *não encontrado* ao "
+            "bipar. O sistema tenta de novo sozinho a cada sincronização."
         )
 
     # ---- CICLO: escolher AGORA quais pedidos entram, antes de baixar ------ #
@@ -1118,7 +1118,15 @@ if fase(0):
                             st.error(e)       # pedido que pode estourar prazo: nunca discreto
                         elif str(e).startswith("⚠️ AMAZON"):
                             st.warning(e)     # aguardando postagem, com prazo: visivel mas nao alarme
-                        registrar_erro("1️⃣ Etiquetas", "Etiqueta não baixada", e)
+                        # "AMAZON aguardando postagem/coleta" NAO e' etiqueta que falhou: a guia
+                        # existe, falta levar ao ponto de entrega. Titulo proprio; so' e' "grave"
+                        # (🚨) quando faltam <=24h ou ja' atrasou.
+                        _txt = str(e)
+                        if "AMAZON aguardando" in _txt:
+                            registrar_erro("1️⃣ Etiquetas", "Amazon aguardando postagem/coleta", e,
+                                           grave=_txt.startswith("🚨"))
+                        else:
+                            registrar_erro("1️⃣ Etiquetas", "Etiqueta não baixada", e)
                 except Exception as exc:
                     erro_visivel("1️⃣ Etiquetas",
                                  "Download dos três canais falhou", exc)
